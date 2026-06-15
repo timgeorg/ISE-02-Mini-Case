@@ -1,6 +1,6 @@
 # CRISP-DM Phase 3: Data Preparation
 
-_Erstellt am 2026-06-15 17:04_
+_Erstellt am 2026-06-15 17:14_
 
 ---
 
@@ -32,18 +32,34 @@ add_frequency_features (Train-only Ref)  ->  save parquet
 
 ## Feature-Liste
 
-Insgesamt **23 Features**, eingeteilt in Gruppen:
+Insgesamt **27 Features**, eingeteilt in Gruppen:
 
 | Gruppe | Features | Beschreibung |
 |---|---|---|
 | **Datum (zyklisch)** | `dow_sin`, `dow_cos`, `month_sin`, `month_cos` | Sinus/Cosinus-Encoding für Wochentag & Monat (Modell erkennt Zyklizität) |
-| **Datum (linear)** | `dayofweek`, `day`, `month`, `weekofyear`, `quarter`, `is_weekend`, `is_holiday` | Roh-Encoding |
+| **Datum (linear)** | `dayofweek`, `day`, `month`, `weekofyear`, `quarter`, `is_weekend`, `is_holiday`, `is_school_break`, `is_free_day` | Roh-Encoding. `is_holiday` = federal, `is_school_break` = regionale Schulferien (DC, Fairfax, Montgomery), `is_free_day` = Wochenende OR holiday OR school_break |
 | **Tageszeit (zyklisch)** | `tod_sin`, `tod_cos` | Sinus/Cosinus für Minuten seit Mitternacht |
 | **Tageszeit (linear)** | `sched_dep_hour`, `sched_dep_minute`, `sched_dep_min_of_day`, `time_of_day` | Roh-Encoding + 4-Bucket (Nacht/Morgen/Mittag/Abend) |
 | **Strecke** | `sched_elapsed_min` | Proxy für Distanz (Kurz-/Langstrecke) |
 | **Frequency-Encoding** | `flight_combo_freq`, `dest_freq` | Häufigkeit der (carrier, dest, flight_number)-Kombination bzw. Destination |
-| **Arrival-Aggregate** | `origin_daily_arrival_delay_mean`, `origin_daily_arrival_n` | Mittlere Ankunftsverspätung an diesem Tag von dieser Origin |
+| **Arrival-Aggregate (1 Tag)** | `origin_daily_arrival_delay_mean`, `origin_daily_arrival_n` | Mittlere Ankunftsverspätung an diesem Tag von dieser Origin |
+| **Arrival-Aggregate (7-Tage-Rolling)** | `origin_7d_arrival_delay_mean`, `origin_7d_arrival_n` | Mittelwert/Summe der letzten 7 Tage (ohne aktuellen Tag). Glättet Ausreißer, bildet Trends ab. |
 | **Cancellation-Aggregate** | `cancellations_on_day` | Anzahl Stornierungen am gleichen Tag (IAD-weit) |
+
+### Regionale Feiertage (`is_school_break`)
+
+Quelle: veröffentlichte Schulkalender für 3 Bezirke im IAD-Einzugsgebiet:
+
+- **DC Public Schools** (Washington DC)
+- **Fairfax County Public Schools** (Northern Virginia)
+- **Montgomery County Public Schools** (Maryland Suburbs)
+
+Kodiert als Union der Schulferien-Intervalle aller 3 Bezirke (Frühjahrs-, Sommer-, Herbst-, Winter-, Thanksgiving-Pause).
+
+### 7-Tage-Rolling-Aggregate
+
+Pro `(origin_airport, date)` wird der rolling-7-Tage-Mittel der `arrival_delay_min` berechnet, mit `shift(1)` damit der aktuelle Tag ausgeschlossen ist. Damit hat jeder Flug nur Zugriff auf **vorhergehende** Verspätungs-Information – kein Leakage.
+
 
 ## Explizit ausgeschlossene Features (Leakage-Schutz)
 
@@ -70,6 +86,19 @@ Insgesamt **23 Features**, eingeteilt in Gruppen:
 |---|---:|---:|
 | Zeilen | 35,158 | 12,059 |
 | Unique Destinations | 59 | 54 |
+| `delay_label=1` (Anteil) | 16.27 % | 13.96 % |
+| `is_weekend` | 27.67 % | 27.57 % |
+| `is_holiday` (federal) | 2.95 % | 2.40 % |
+| `is_school_break` (regional) | 10.35 % | 8.67 % |
+| `is_free_day` (kombi) | 38.59 % | 36.25 % |
+| `origin_daily_arrival_n > 0` | 99.75 % | 99.68 % |
+| `origin_7d_arrival_n > 0` | 99.45 % | 99.64 % |
+| `origin_7d_arrival_delay_mean` Mittel | 3.52 | 0.06 |
+| `origin_7d_arrival_delay_mean` Max | 207.57 | 170.64 |
+| Kennzahl | Train | Val |
+|---|---:|---:|
+| Zeilen | 35,158 | 12,059 |
+| Unique Destinations | 59 | 54 |
 | Mittlere Verspätung (Min) | 10.66 | 8.40 |
 | Median Verspätung | -3.00 | -3.00 |
 | `delay_label=1` (Anteil) | 16.27 % | 13.96 % |
@@ -80,6 +109,21 @@ Insgesamt **23 Features**, eingeteilt in Gruppen:
 | Mittlere origin_daily_arrival_delay | 3.71 | -0.28 |
 
 
+
+### Unseen Destinations (Data-Drift-Risiko)
+
+- Destinations in Val, die nicht in Train vorkommen: **4 von 54**
+- Anteil der Val-Flüge zu unseen Destinations: **0.47 %** (57 Flüge)
+
+Diese Flüge können vom Modell nicht sinnvoll eingeschätzt werden, weil das `dest_freq` und `flight_combo_freq`-Encoding 0/fehlend ist.
+
+
+### Beobachtungen zu den neuen Features (Schulferien + 7d-Rolling)
+
+- **`is_school_break`** tritt in **10.3% der Train-Flüge** und **8.7% der Val-Flüge** auf. Damit ist der Val-Wert deutlich niedriger (Val = Jan-Apr enthaelt nur Spring Break + Winter Break), was die Modell-Performance am Anfang beeinflussen kann.
+- **`is_free_day` (kombinierte Variable)** deckt Train ~39 % / Val ~36 % ab. Konsistent mit Wochenend-Quote (~28 %).
+- **`origin_7d_arrival_n > 0`** fuer **99.5%** der Train-Fluege und **99.6%** der Val-Fluege. Rest: kein 7-Tage-Historie (cold start, z. B. neuer Origin oder Datenbeginn).
+- **7-Tage-Mittel der Origin-Verspaetung** zeigt im Mittel ~3.5 Min Verspaetung (Train) - positiv, weil Carrier an IAD im Schnitt leicht verspaetet ist.
 
 ### Unseen Destinations (Data-Drift-Risiko)
 

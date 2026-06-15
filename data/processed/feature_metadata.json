@@ -1,5 +1,5 @@
 {
-  "n_features": 23,
+  "n_features": 27,
   "n_metadata": 7,
   "feature_columns": [
     "dow_sin",
@@ -13,6 +13,8 @@
     "quarter",
     "is_weekend",
     "is_holiday",
+    "is_school_break",
+    "is_free_day",
     "sched_dep_hour",
     "sched_dep_minute",
     "sched_dep_min_of_day",
@@ -24,6 +26,8 @@
     "dest_freq",
     "origin_daily_arrival_delay_mean",
     "origin_daily_arrival_n",
+    "origin_7d_arrival_delay_mean",
+    "origin_7d_arrival_n",
     "cancellations_on_day"
   ],
   "metadata_columns": [

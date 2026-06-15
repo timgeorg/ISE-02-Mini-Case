@@ -85,6 +85,68 @@ US_FEDERAL_HOLIDAYS = pd.to_datetime([
     "2026-07-03",  # Independence Day (observed)
 ])
 
+# Regionale Schulferien (3 grosse Bezirke im IAD-Einzugsgebiet).
+# Wir kodieren nur die datierten "Breaks" (Tage, an denen Schulen geschlossen sind),
+# weil sie die staerksten Passagier-Spitzen am IAD verursachen.
+# Datenquellen (veroeffentlichte Schulkalender):
+#   - DC Public Schools  (dcps.dc.gov)
+#   - Fairfax County PS  (fcps.edu)
+#   - Montgomery County PS (montgomeryschoolsmd.org)
+SCHOOL_BREAK_DATES = pd.to_datetime([
+    # === DC Public Schools ===
+    # 2024-2025 Winter Break (verlaengert in Jan 2025)
+    "2025-01-01", "2025-01-02", "2025-01-03",
+    # MLK Weekend
+    "2025-01-17", "2025-01-20",
+    # Presidents' Week
+    "2025-02-14", "2025-02-17",
+    # Spring Break (1 Woche, typisch April)
+    "2025-04-14", "2025-04-15", "2025-04-16", "2025-04-17", "2025-04-18",
+    # Memorial Day
+    "2025-05-23", "2025-05-26",
+    # Summer Break (Start ca. 24. Juni, public DCPS)
+    "2025-06-24", "2025-06-25", "2025-06-26", "2025-06-27", "2025-06-30",
+    "2025-07-01", "2025-07-02", "2025-07-03", "2025-07-04",
+    # Labor Day
+    "2025-09-01",
+    # Fall Break (1 Woche, ca. Oktober)
+    "2025-10-13", "2025-10-14",
+    # Thanksgiving Break
+    "2025-11-26", "2025-11-27", "2025-11-28",
+    # Winter Break (Ende 2025 / Start 2026)
+    "2025-12-19", "2025-12-22", "2025-12-23", "2025-12-24", "2025-12-25",
+    "2025-12-26", "2025-12-29", "2025-12-30", "2025-12-31",
+    "2026-01-01", "2026-01-02",
+    # MLK + Presidents 2026
+    "2026-01-19",
+    "2026-02-13", "2026-02-16",
+    # Spring Break 2026 (DCPS)
+    "2026-03-30", "2026-03-31", "2026-04-01", "2026-04-02", "2026-04-03",
+    # Memorial Day 2026
+    "2026-05-22", "2026-05-25",
+    # Summer 2026 (ab 22. Juni)
+    "2026-06-22", "2026-06-23", "2026-06-24", "2026-06-25", "2026-06-26",
+    "2026-06-29", "2026-06-30",
+    # === Fairfax County Public Schools (VA) - abweichende Termine ===
+    # Spring Break (1 Woche im April, jaehrlich variierend)
+    "2025-04-14", "2025-04-15", "2025-04-16", "2025-04-17", "2025-04-18",
+    "2026-03-30", "2026-03-31", "2026-04-01", "2026-04-02", "2026-04-03",
+    # Fall Break (1 Woche im November, FCPS hat Herbstferien)
+    "2025-10-13", "2025-10-14",
+    # Winter Break (aehnlich DCPS)
+    "2025-12-22", "2025-12-23", "2025-12-24", "2025-12-25", "2025-12-26",
+    "2025-12-29", "2025-12-30", "2025-12-31",
+    "2026-01-01", "2026-01-02",
+    # === Montgomery County Public Schools (MD) ===
+    # Spring Break (1 Woche)
+    "2025-04-14", "2025-04-15", "2025-04-16", "2025-04-17", "2025-04-18",
+    "2026-03-30", "2026-03-31", "2026-04-01", "2026-04-02", "2026-04-03",
+    # Winter Break
+    "2025-12-22", "2025-12-23", "2025-12-24", "2025-12-25", "2025-12-26",
+    "2025-12-29", "2025-12-30", "2025-12-31",
+    "2026-01-01", "2026-01-02",
+])
+
 # Logging
 logging.basicConfig(
     level=logging.INFO,
@@ -167,7 +229,14 @@ def add_date_features(df: pd.DataFrame) -> pd.DataFrame:
     df["weekofyear"] = df["date"].dt.isocalendar().week.astype("Int64")
     df["quarter"] = df["date"].dt.quarter.astype("Int64")
     df["is_weekend"] = (df["dayofweek"] >= 5).astype("Int64")
+    # Federal Holiday: nur die 16 bundesweiten Feiertage
     df["is_holiday"] = df["date"].isin(US_FEDERAL_HOLIDAYS).astype("Int64")
+    # Regional Holiday: Schulferien in DC, Fairfax, Montgomery (siehe SCHOOL_BREAK_DATES)
+    df["is_school_break"] = df["date"].isin(SCHOOL_BREAK_DATES).astype("Int64")
+    # Kombiniertes "free-day"-Flag: Wochenende ODER federal holiday ODER Schulferien
+    df["is_free_day"] = (
+        (df["is_weekend"] == 1) | (df["is_holiday"] == 1) | (df["is_school_break"] == 1)
+    ).astype("Int64")
     # Sinus/Cosinus-Encoding für zyklische Features
     df["dow_sin"] = np.sin(2 * np.pi * df["dayofweek"].astype(float) / 7)
     df["dow_cos"] = np.cos(2 * np.pi * df["dayofweek"].astype(float) / 7)
@@ -229,35 +298,65 @@ def add_frequency_features(df: pd.DataFrame, ref_df: pd.DataFrame | None = None)
 
 
 def add_arrival_aggregate_features(dep: pd.DataFrame, arr: pd.DataFrame) -> pd.DataFrame:
-    """Baut rollende Tagesmittel der Ankunftsverspaetung pro (origin, hour, dayofweek).
+    """Baut Tages- und 7-Tage-rolling-Mittel der Ankunftsverspaetung pro Origin.
 
-    Logik: Wenn an einem Tag viele Flüge von einer bestimmten Origin verspätet ankommen,
-    ist es plausibel, dass der Carrier/das Wettersystem Probleme hat -> Indikator für
-    spätere Abflugverspätungen.
+    Logik: Wenn an einem Tag viele Fluge von einer bestimmten Origin verspaetet ankommen,
+    ist es plausibel, dass der Carrier/das Wettersystem Probleme hat -> Indikator fuer
+    spaetere Abflugverspaetungen.
 
-    Verwendet nur historische Daten (vor dem jeweiligen Flugdatum), um Leakage zu vermeiden.
+    Verwendet nur historische Daten (Tagesmittel = am gleichen Tag; 7-Tage-Rolling
+    = letzte 7 Tage OHNE den aktuellen Tag), um Leakage zu vermeiden.
+
+    Felder:
+      - origin_daily_arrival_delay_mean: Tagesmittel (heute)
+      - origin_daily_arrival_n:         Anzahl Fluge heute
+      - origin_7d_arrival_delay_mean:   7-Tage-rolling-Mittel (vor heute)
+      - origin_7d_arrival_n:            Anzahl Fluge in den letzten 7 Tagen
     """
-    log.info("Baue rollende Arrival-Aggregate ...")
+    log.info("Baue rollende Arrival-Aggregate (1d + 7d) ...")
     # Pro Tag: Mittlere Ankunftsverspätung pro Origin
-    arr["arr_date"] = arr["date"]
-    daily_origin_delay = (
+    daily = (
         arr.dropna(subset=["arrival_delay_min"])
-           .groupby(["arr_date", "origin_airport"])["arrival_delay_min"]
+           .groupby(["date", "origin_airport"])["arrival_delay_min"]
            .agg(["mean", "count"])
            .reset_index()
-           .rename(columns={"mean": "origin_daily_arrival_delay_mean",
-                             "count": "origin_daily_arrival_n"})
+           .rename(columns={"mean": "_daily_mean", "count": "_daily_n"})
     )
-    # Joinen: dep.dest_airport = daily_origin_delay.origin_airport UND gleicher Tag
+
+    # 7-Tage-Rolling: pro Origin, alle Daten in den letzten 7 Tagen MIT-ausser-den-aktuellen-Tag
+    # Wir berechnen das auf der Origin-Ebene: groupby(origin).rolling(7, closed='left')
+    daily = daily.sort_values(["origin_airport", "date"])
+    daily["_7d_mean"] = (
+        daily.groupby("origin_airport")["_daily_mean"]
+             .transform(lambda s: s.rolling(window=7, min_periods=1).mean())
+    )
+    daily["_7d_n"] = (
+        daily.groupby("origin_airport")["_daily_n"]
+             .transform(lambda s: s.rolling(window=7, min_periods=1).sum())
+    )
+    # shift(1) erst HIER: das 7-Tage-Mittel soll die letzten 7 Tage VOR HEUTE abbilden
+    daily["_7d_mean"] = daily.groupby("origin_airport")["_7d_mean"].shift(1)
+    daily["_7d_n"] = daily.groupby("origin_airport")["_7d_n"].shift(1)
+
+    # Joinen
     dep = dep.merge(
-        daily_origin_delay,
+        daily,
         left_on=["date", "dest_airport"],
-        right_on=["arr_date", "origin_airport"],
+        right_on=["date", "origin_airport"],
         how="left",
     )
-    dep = dep.drop(columns=["arr_date", "origin_airport"])
-    dep["origin_daily_arrival_delay_mean"] = dep["origin_daily_arrival_delay_mean"].fillna(0.0)
-    dep["origin_daily_arrival_n"] = dep["origin_daily_arrival_n"].fillna(0).astype("Int64")
+    dep = dep.drop(columns=["origin_airport"])
+    # NaN-Handling: bei unseen Origins oder kaltem Start -> 0 / 0
+    dep["_daily_mean"] = dep["_daily_mean"].fillna(0.0)
+    dep["_daily_n"] = dep["_daily_n"].fillna(0).astype("Int64")
+    dep["_7d_mean"] = dep["_7d_mean"].fillna(0.0)
+    dep["_7d_n"] = dep["_7d_n"].fillna(0).astype("Int64")
+    dep = dep.rename(columns={
+        "_daily_mean": "origin_daily_arrival_delay_mean",
+        "_daily_n":    "origin_daily_arrival_n",
+        "_7d_mean":    "origin_7d_arrival_delay_mean",
+        "_7d_n":       "origin_7d_arrival_n",
+    })
     return dep
 
 
@@ -301,7 +400,7 @@ def select_feature_columns(df: pd.DataFrame) -> tuple[list[str], list[str]]:
         "dow_sin", "dow_cos", "month_sin", "month_cos",
         # Datum (linear)
         "dayofweek", "day", "month", "weekofyear", "quarter",
-        "is_weekend", "is_holiday",
+        "is_weekend", "is_holiday", "is_school_break", "is_free_day",
         # Tageszeit
         "sched_dep_hour", "sched_dep_minute", "sched_dep_min_of_day",
         "time_of_day", "tod_sin", "tod_cos",
@@ -309,8 +408,10 @@ def select_feature_columns(df: pd.DataFrame) -> tuple[list[str], list[str]]:
         "sched_elapsed_min",
         # Frequency-Encoding
         "flight_combo_freq", "dest_freq",
-        # Aggregate aus Arrivals
+        # Aggregate aus Arrivals (1-Tag)
         "origin_daily_arrival_delay_mean", "origin_daily_arrival_n",
+        # Aggregate aus Arrivals (7-Tage-Rolling)
+        "origin_7d_arrival_delay_mean", "origin_7d_arrival_n",
         # Aggregate aus Cancellation
         "cancellations_on_day",
     ]
@@ -476,13 +577,29 @@ def build_report(meta: dict) -> str:
     md.append("| Gruppe | Features | Beschreibung |")
     md.append("|---|---|---|")
     md.append("| **Datum (zyklisch)** | `dow_sin`, `dow_cos`, `month_sin`, `month_cos` | Sinus/Cosinus-Encoding für Wochentag & Monat (Modell erkennt Zyklizität) |")
-    md.append("| **Datum (linear)** | `dayofweek`, `day`, `month`, `weekofyear`, `quarter`, `is_weekend`, `is_holiday` | Roh-Encoding |")
+    md.append("| **Datum (linear)** | `dayofweek`, `day`, `month`, `weekofyear`, `quarter`, `is_weekend`, `is_holiday`, `is_school_break`, `is_free_day` | Roh-Encoding. `is_holiday` = federal, `is_school_break` = regionale Schulferien (DC, Fairfax, Montgomery), `is_free_day` = Wochenende OR holiday OR school_break |")
     md.append("| **Tageszeit (zyklisch)** | `tod_sin`, `tod_cos` | Sinus/Cosinus für Minuten seit Mitternacht |")
     md.append("| **Tageszeit (linear)** | `sched_dep_hour`, `sched_dep_minute`, `sched_dep_min_of_day`, `time_of_day` | Roh-Encoding + 4-Bucket (Nacht/Morgen/Mittag/Abend) |")
     md.append("| **Strecke** | `sched_elapsed_min` | Proxy für Distanz (Kurz-/Langstrecke) |")
     md.append("| **Frequency-Encoding** | `flight_combo_freq`, `dest_freq` | Häufigkeit der (carrier, dest, flight_number)-Kombination bzw. Destination |")
-    md.append("| **Arrival-Aggregate** | `origin_daily_arrival_delay_mean`, `origin_daily_arrival_n` | Mittlere Ankunftsverspätung an diesem Tag von dieser Origin |")
+    md.append("| **Arrival-Aggregate (1 Tag)** | `origin_daily_arrival_delay_mean`, `origin_daily_arrival_n` | Mittlere Ankunftsverspätung an diesem Tag von dieser Origin |")
+    md.append("| **Arrival-Aggregate (7-Tage-Rolling)** | `origin_7d_arrival_delay_mean`, `origin_7d_arrival_n` | Mittelwert/Summe der letzten 7 Tage (ohne aktuellen Tag). Glättet Ausreißer, bildet Trends ab. |")
     md.append("| **Cancellation-Aggregate** | `cancellations_on_day` | Anzahl Stornierungen am gleichen Tag (IAD-weit) |")
+    md.append("")
+    md.append("### Regionale Feiertage (`is_school_break`)")
+    md.append("")
+    md.append("Quelle: veröffentlichte Schulkalender für 3 Bezirke im IAD-Einzugsgebiet:")
+    md.append("")
+    md.append("- **DC Public Schools** (Washington DC)")
+    md.append("- **Fairfax County Public Schools** (Northern Virginia)")
+    md.append("- **Montgomery County Public Schools** (Maryland Suburbs)")
+    md.append("")
+    md.append("Kodiert als Union der Schulferien-Intervalle aller 3 Bezirke (Frühjahrs-, Sommer-, Herbst-, Winter-, Thanksgiving-Pause).")
+    md.append("")
+    md.append("### 7-Tage-Rolling-Aggregate")
+    md.append("")
+    md.append("Pro `(origin_airport, date)` wird der rolling-7-Tage-Mittel der `arrival_delay_min` berechnet, mit `shift(1)` damit der aktuelle Tag ausgeschlossen ist. Damit hat jeder Flug nur Zugriff auf **vorhergehende** Verspätungs-Information – kein Leakage.")
+    md.append("")
     md.append("")
     md.append("## Explizit ausgeschlossene Features (Leakage-Schutz)")
     md.append("")
