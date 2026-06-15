@@ -42,9 +42,6 @@ Thumbs.db
 desktop.ini
 
 # Daten & Logs (nicht einchecken)
-data/raw/
-data/processed/
 logs/
-*.csv
 *.zip
 *.parquet
