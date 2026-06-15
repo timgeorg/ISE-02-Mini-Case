@@ -1,0 +1,557 @@
+"""
+CRISP-DM Phase 3: Data Preparation
+====================================
+
+Pipeline: laden -> bereinigen -> features ableiten -> target -> split -> parquet.
+
+Input:  data/raw/Detailed_Statistics_*.csv
+Output: data/processed/iad_flights_train.parquet
+        data/processed/iad_flights_val.parquet
+        data/processed/feature_metadata.json
+        docs/data_preparation.md
+
+Getroffene Entscheidungen (siehe docs/data_understanding.md):
+  - Verfruehte Fluge (< 0 Min) = Klasse 0
+  - Cancelled/Diverted = Drop (kein sinnvolles Target)
+  - 2025 = Train, 2026 (Jan-Apr) = Validation (temporal)
+  - Threshold = 15 Min
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+# ---------------------------------------------------------------------------
+# Konfiguration
+# ---------------------------------------------------------------------------
+
+PROJECT = Path(__file__).resolve().parent.parent
+RAW = PROJECT / "data" / "raw"
+PROCESSED = PROJECT / "data" / "processed"
+PROCESSED.mkdir(parents=True, exist_ok=True)
+DOCS = PROJECT / "docs"
+LOGS = PROJECT / "logs"
+LOGS.mkdir(parents=True, exist_ok=True)
+
+# Spaltendefinitionen (siehe 01_business_data_understanding.py)
+DEPARTURE_COLS = [
+    "carrier_code", "date", "flight_number", "tail_number", "dest_airport",
+    "sched_dep_time", "actual_dep_time",
+    "sched_elapsed_min", "actual_elapsed_min",
+    "departure_delay_min", "wheels_off_time", "taxi_out_min",
+    "delay_carrier_min", "delay_weather_min", "delay_nas_min",
+    "delay_security_min", "delay_late_aircraft_min",
+]
+ARRIVAL_COLS = [
+    "carrier_code", "date", "flight_number", "tail_number", "origin_airport",
+    "sched_arr_time", "actual_arr_time",
+    "sched_elapsed_min", "actual_elapsed_min",
+    "arrival_delay_min", "wheels_on_time", "taxi_in_min",
+    "delay_carrier_min", "delay_weather_min", "delay_nas_min",
+    "delay_security_min", "delay_late_aircraft_min",
+]
+CANCELLATION_COLS = ["carrier_code", "date", "flight_number", "tail_number", "dest_airport"]
+DIVERSION_COLS = ["carrier_code", "date", "flight_number", "tail_number", "dest_airport"]
+
+# Schwellwert & Split
+DELAY_THRESHOLD_MIN = 15
+SPLIT_DATE = pd.Timestamp("2026-01-01")  # Train: < 2026-01-01, Val: >=
+
+# US-Bundesfeiertage 2025-2026 (gemaess federal Reserve / OPM)
+US_FEDERAL_HOLIDAYS = pd.to_datetime([
+    "2025-01-01",  # New Year's Day
+    "2025-01-20",  # MLK Day
+    "2025-02-17",  # Presidents' Day
+    "2025-05-26",  # Memorial Day
+    "2025-06-19",  # Juneteenth
+    "2025-07-04",  # Independence Day
+    "2025-09-01",  # Labor Day
+    "2025-10-13",  # Columbus Day
+    "2025-11-11",  # Veterans Day
+    "2025-11-27",  # Thanksgiving
+    "2025-12-25",  # Christmas
+    "2026-01-01",  # New Year's Day
+    "2026-01-19",  # MLK Day
+    "2026-02-16",  # Presidents' Day
+    "2026-05-25",  # Memorial Day
+    "2026-06-19",  # Juneteenth
+    "2026-07-03",  # Independence Day (observed)
+])
+
+# Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOGS / "data_preparation.log", encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
+    ],
+)
+log = logging.getLogger("data_prep")
+
+# Reproduzierbarkeit
+np.random.seed(42)
+
+
+# ---------------------------------------------------------------------------
+# 1. LADEN + BEREINIGEN
+# ---------------------------------------------------------------------------
+
+def load_bts_csv(path: Path, columns: list[str]) -> pd.DataFrame:
+    """Lädt eine BTS-CSV mit den korrekten Header-Zeilen."""
+    log.info("Lade %s ...", path.name)
+    df = pd.read_csv(path, skiprows=9, header=None, names=columns, dtype=str, encoding="utf-8")
+    # Filter SOURCE-Zeile + NaN
+    df = df[df["carrier_code"] != "SOURCE: Bureau of Transportation Statistics"]
+    df = df[df["carrier_code"].notna()]
+    # Whitespace trimmen
+    for c in df.select_dtypes(include=["object", "string"]).columns:
+        df[c] = df[c].str.strip()
+    # Carrier-Filter: nur "echte" Carrier-Codes
+    valid = df["carrier_code"].str.match(r"^[A-Z0-9]{2,3}$", na=False)
+    df = df[valid].reset_index(drop=True)
+    log.info("  -> %s Zeilen nach Cleaning", f"{len(df):,}")
+    return df
+
+
+def parse_types_departure(df: pd.DataFrame) -> pd.DataFrame:
+    """Konvertiert Strings -> passende Typen für Departures."""
+    df["date"] = pd.to_datetime(df["date"], format="%m/%d/%Y", errors="coerce")
+    int_cols = ["flight_number", "sched_elapsed_min", "actual_elapsed_min",
+                "departure_delay_min", "taxi_out_min"]
+    for c in int_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64")
+    # Zeit-Strings HH:MM parsen
+    df["sched_dep_hour"] = pd.to_numeric(
+        df["sched_dep_time"].str.split(":").str[0], errors="coerce"
+    ).astype("Int64")
+    df["sched_dep_minute"] = pd.to_numeric(
+        df["sched_dep_time"].str.split(":").str[1], errors="coerce"
+    ).astype("Int64")
+    return df
+
+
+def parse_types_arrival(df: pd.DataFrame) -> pd.DataFrame:
+    """Konvertiert Strings -> passende Typen für Arrivals."""
+    df["date"] = pd.to_datetime(df["date"], format="%m/%d/%Y", errors="coerce")
+    int_cols = ["flight_number", "sched_elapsed_min", "actual_elapsed_min",
+                "arrival_delay_min", "taxi_in_min"]
+    for c in int_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64")
+    return df
+
+
+def parse_types_minimal(df: pd.DataFrame) -> pd.DataFrame:
+    """Für Cancellation / Diversion."""
+    df["date"] = pd.to_datetime(df["date"], format="%m/%d/%Y", errors="coerce")
+    df["flight_number"] = pd.to_numeric(df["flight_number"], errors="coerce").astype("Int64")
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 2. FEATURE ENGINEERING
+# ---------------------------------------------------------------------------
+
+def add_date_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Ableitung von Datums-Features."""
+    df["dayofweek"] = df["date"].dt.dayofweek.astype("Int64")  # 0=Mon, 6=Sun
+    df["day"] = df["date"].dt.day.astype("Int64")
+    df["month"] = df["date"].dt.month.astype("Int64")
+    df["weekofyear"] = df["date"].dt.isocalendar().week.astype("Int64")
+    df["quarter"] = df["date"].dt.quarter.astype("Int64")
+    df["is_weekend"] = (df["dayofweek"] >= 5).astype("Int64")
+    df["is_holiday"] = df["date"].isin(US_FEDERAL_HOLIDAYS).astype("Int64")
+    # Sinus/Cosinus-Encoding für zyklische Features
+    df["dow_sin"] = np.sin(2 * np.pi * df["dayofweek"].astype(float) / 7)
+    df["dow_cos"] = np.cos(2 * np.pi * df["dayofweek"].astype(float) / 7)
+    df["month_sin"] = np.sin(2 * np.pi * df["month"].astype(float) / 12)
+    df["month_cos"] = np.cos(2 * np.pi * df["month"].astype(float) / 12)
+    return df
+
+
+def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Tageszeit-Features aus sched_dep_time."""
+    # Schon in parse_types_departure geparst: sched_dep_hour, sched_dep_minute
+    # Minuten seit Mitternacht (0-1439)
+    df["sched_dep_min_of_day"] = (
+        df["sched_dep_hour"].astype("Int64") * 60 + df["sched_dep_minute"].astype("Int64")
+    )
+    # Tageszeit-Bucket: 0=Nacht, 1=Morgen, 2=Mittag, 3=Abend
+    def _bucket(h):
+        if pd.isna(h):
+            return -1
+        h = int(h)
+        if h < 6:
+            return 0  # Nacht
+        if h < 12:
+            return 1  # Morgen
+        if h < 18:
+            return 2  # Mittag/Nachmittag
+        return 3  # Abend
+    df["time_of_day"] = df["sched_dep_hour"].apply(_bucket).astype("Int64")
+    # Sinus/Cosinus für Tageszeit
+    df["tod_sin"] = np.sin(2 * np.pi * df["sched_dep_min_of_day"].astype(float) / 1440)
+    df["tod_cos"] = np.cos(2 * np.pi * df["sched_dep_min_of_day"].astype(float) / 1440)
+    return df
+
+
+def add_frequency_features(df: pd.DataFrame, ref_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Frequency-Encoding für hochkardinale kategorische Features.
+
+    Verwendet ref_df (z.B. Train-Set) für die Frequenz-Berechnung, um Data Leakage
+    bei Train/Val-Splits zu vermeiden.
+    """
+    if ref_df is None:
+        ref_df = df
+
+    # Frequenz: wie oft wurde jede (carrier, dest, flight_number)-Kombination geflogen?
+    freq = ref_df.groupby(["carrier_code", "dest_airport", "flight_number"]).size()
+    freq = freq.rename("flight_combo_freq")
+    df = df.merge(
+        freq.reset_index(),
+        on=["carrier_code", "dest_airport", "flight_number"],
+        how="left",
+    )
+    df["flight_combo_freq"] = df["flight_combo_freq"].fillna(0).astype("Int64")
+
+    # Destination-Frequenz (wie viele Fluege hat diese Destination insgesamt?)
+    dest_freq = ref_df["dest_airport"].value_counts()
+    df["dest_freq"] = df["dest_airport"].map(dest_freq).fillna(0).astype("Int64")
+
+    return df
+
+
+def add_arrival_aggregate_features(dep: pd.DataFrame, arr: pd.DataFrame) -> pd.DataFrame:
+    """Baut rollende Tagesmittel der Ankunftsverspaetung pro (origin, hour, dayofweek).
+
+    Logik: Wenn an einem Tag viele Flüge von einer bestimmten Origin verspätet ankommen,
+    ist es plausibel, dass der Carrier/das Wettersystem Probleme hat -> Indikator für
+    spätere Abflugverspätungen.
+
+    Verwendet nur historische Daten (vor dem jeweiligen Flugdatum), um Leakage zu vermeiden.
+    """
+    log.info("Baue rollende Arrival-Aggregate ...")
+    # Pro Tag: Mittlere Ankunftsverspätung pro Origin
+    arr["arr_date"] = arr["date"]
+    daily_origin_delay = (
+        arr.dropna(subset=["arrival_delay_min"])
+           .groupby(["arr_date", "origin_airport"])["arrival_delay_min"]
+           .agg(["mean", "count"])
+           .reset_index()
+           .rename(columns={"mean": "origin_daily_arrival_delay_mean",
+                             "count": "origin_daily_arrival_n"})
+    )
+    # Joinen: dep.dest_airport = daily_origin_delay.origin_airport UND gleicher Tag
+    dep = dep.merge(
+        daily_origin_delay,
+        left_on=["date", "dest_airport"],
+        right_on=["arr_date", "origin_airport"],
+        how="left",
+    )
+    dep = dep.drop(columns=["arr_date", "origin_airport"])
+    dep["origin_daily_arrival_delay_mean"] = dep["origin_daily_arrival_delay_mean"].fillna(0.0)
+    dep["origin_daily_arrival_n"] = dep["origin_daily_arrival_n"].fillna(0).astype("Int64")
+    return dep
+
+
+def add_cancellation_features(dep: pd.DataFrame, canc: pd.DataFrame) -> pd.DataFrame:
+    """Binaer-Feature: gab es an einem Tag Cancellation an der Destination?"""
+    log.info("Baue Cancellation-Features ...")
+    canc_daily = canc.groupby("date").size().rename("cancellations_on_day").reset_index()
+    dep = dep.merge(canc_daily, on="date", how="left")
+    dep["cancellations_on_day"] = dep["cancellations_on_day"].fillna(0).astype("Int64")
+    return dep
+
+
+# ---------------------------------------------------------------------------
+# 3. TARGET + SPLIT
+# ---------------------------------------------------------------------------
+
+def make_target(df: pd.DataFrame) -> pd.DataFrame:
+    """Binäre Target-Variable: 1 wenn Verspätung >= Threshold, sonst 0."""
+    df["delay_label"] = (df["departure_delay_min"] >= DELAY_THRESHOLD_MIN).astype("Int64")
+    return df
+
+
+def temporal_split(df: pd.DataFrame, split_date: pd.Timestamp) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Train = vor split_date, Val = ab split_date (inclusiv)."""
+    train = df[df["date"] < split_date].copy()
+    val = df[df["date"] >= split_date].copy()
+    return train, val
+
+
+# ---------------------------------------------------------------------------
+# 4. PIPELINE
+# ---------------------------------------------------------------------------
+
+def select_feature_columns(df: pd.DataFrame) -> tuple[list[str], list[str]]:
+    """Wählt finale Feature- und Metadata-Spalten.
+
+    Returns: (feature_cols, metadata_cols)
+    """
+    feature_cols = [
+        # Datum (zyklisch)
+        "dow_sin", "dow_cos", "month_sin", "month_cos",
+        # Datum (linear)
+        "dayofweek", "day", "month", "weekofyear", "quarter",
+        "is_weekend", "is_holiday",
+        # Tageszeit
+        "sched_dep_hour", "sched_dep_minute", "sched_dep_min_of_day",
+        "time_of_day", "tod_sin", "tod_cos",
+        # Strecke
+        "sched_elapsed_min",
+        # Frequency-Encoding
+        "flight_combo_freq", "dest_freq",
+        # Aggregate aus Arrivals
+        "origin_daily_arrival_delay_mean", "origin_daily_arrival_n",
+        # Aggregate aus Cancellation
+        "cancellations_on_day",
+    ]
+    metadata_cols = [
+        "carrier_code", "date", "flight_number", "dest_airport",
+        "sched_dep_time", "departure_delay_min", "delay_label",
+    ]
+    # Nur vorhandene Spalten zurückgeben
+    feature_cols = [c for c in feature_cols if c in df.columns]
+    metadata_cols = [c for c in metadata_cols if c in df.columns]
+    return feature_cols, metadata_cols
+
+
+def run_pipeline() -> dict:
+    """Haupt-Pipeline. Liefert Metadaten-Dict."""
+    log.info("=" * 70)
+    log.info("CRISP-DM Phase 3: Data Preparation")
+    log.info("=" * 70)
+
+    # --- 1. Laden
+    log.info("\n[1/5] Lade Rohdaten ...")
+    dep = load_bts_csv(RAW / "Detailed_Statistics_Departures.csv", DEPARTURE_COLS)
+    arr = load_bts_csv(RAW / "Detailed_Statistics_Arrivals.csv", ARRIVAL_COLS)
+    canc = load_bts_csv(RAW / "Detailed_Statistics_Cancellation.csv", CANCELLATION_COLS)
+    div = load_bts_csv(RAW / "Detailed_Statistics_Diversion.csv", DIVERSION_COLS)
+
+    # --- 2. Typen parsen
+    log.info("\n[2/5] Parse Typen ...")
+    dep = parse_types_departure(dep)
+    arr = parse_types_arrival(arr)
+    canc = parse_types_minimal(canc)
+    div = parse_types_minimal(div)
+
+    # --- 3. Bereinigen / Drop
+    log.info("\n[3/5] Bereinige Departures ...")
+    n_before = len(dep)
+    # NaN in departure_delay_min -> Drop (Entscheidung #5)
+    dep = dep.dropna(subset=["departure_delay_min"])
+    log.info("  Drop %d Zeilen mit NaN delay -> %d verbleibend",
+             n_before - len(dep), len(dep))
+    # NaN in sched_elapsed_min -> Drop (essentielles Feature)
+    n_before = len(dep)
+    dep = dep.dropna(subset=["sched_elapsed_min"])
+    log.info("  Drop %d Zeilen mit NaN sched_elapsed -> %d verbleibend",
+             n_before - len(dep), len(dep))
+
+    # --- 4. Feature Engineering
+    log.info("\n[4/5] Feature Engineering ...")
+    dep = add_date_features(dep)
+    dep = add_time_features(dep)
+    dep = add_arrival_aggregate_features(dep, arr)
+    dep = add_cancellation_features(dep, canc)
+    # Frequency-Encoding erst NACH Split, damit wir es korrekt machen können
+    # -> erst Split, dann Frequenz mit Train als Referenz
+
+    # --- 5. Target + Split
+    log.info("\n[5/5] Target + Split ...")
+    dep = make_target(dep)
+    log.info("  Klassen-Verteilung (vor Split): %d verspaetet / %d puenktlich",
+             dep["delay_label"].sum(), (dep["delay_label"] == 0).sum())
+
+    train, val = temporal_split(dep, SPLIT_DATE)
+    log.info("  Train: %d Zeilen (vor %s)", len(train), SPLIT_DATE.date())
+    log.info("  Val:   %d Zeilen (ab  %s)", len(val), SPLIT_DATE.date())
+    log.info("  Train-Klassen: %d / %d (%.1f%% verspaetet)",
+             train["delay_label"].sum(), len(train),
+             100 * train["delay_label"].mean())
+    log.info("  Val-Klassen:   %d / %d (%.1f%% verspaetet)",
+             val["delay_label"].sum(), len(val),
+             100 * val["delay_label"].mean())
+
+    # Frequency-Encoding mit Train als Referenz
+    train = add_frequency_features(train, ref_df=train)
+    val = add_frequency_features(val, ref_df=train)
+
+    # --- 6. Speichern
+    feature_cols, metadata_cols = select_feature_columns(train)
+    log.info("\n  Features: %d Spalten", len(feature_cols))
+    log.info("  Metadata: %d Spalten", len(metadata_cols))
+
+    # Parquet speichern (Spalten-Reihenfolge: metadata + features)
+    all_cols = metadata_cols + feature_cols
+    train_out = train[all_cols].copy()
+    val_out = val[all_cols].copy()
+
+    train_path = PROCESSED / "iad_flights_train.parquet"
+    val_path = PROCESSED / "iad_flights_val.parquet"
+    train_out.to_parquet(train_path, index=False)
+    val_out.to_parquet(val_path, index=False)
+    log.info("  Gespeichert: %s", train_path.name)
+    log.info("  Gespeichert: %s", val_path.name)
+
+    # --- 7. Metadaten
+    meta = {
+        "n_features": len(feature_cols),
+        "n_metadata": len(metadata_cols),
+        "feature_columns": feature_cols,
+        "metadata_columns": metadata_cols,
+        "delay_threshold_min": DELAY_THRESHOLD_MIN,
+        "split_date": SPLIT_DATE.strftime("%Y-%m-%d"),
+        "n_train": int(len(train)),
+        "n_val": int(len(val)),
+        "train_delayed_pct": float(train["delay_label"].mean() * 100),
+        "val_delayed_pct": float(val["delay_label"].mean() * 100),
+        "n_unique_destinations": int(train["dest_airport"].nunique()),
+        "n_unique_flight_numbers": int(train["flight_number"].nunique()),
+        "date_train_min": train["date"].min().strftime("%Y-%m-%d"),
+        "date_train_max": train["date"].max().strftime("%Y-%m-%d"),
+        "date_val_min": val["date"].min().strftime("%Y-%m-%d"),
+        "date_val_max": val["date"].max().strftime("%Y-%m-%d"),
+    }
+    meta_path = PROCESSED / "feature_metadata.json"
+    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    log.info("  Metadaten: %s", meta_path.name)
+
+    return meta
+
+
+# ---------------------------------------------------------------------------
+# 5. REPORT
+# ---------------------------------------------------------------------------
+
+def build_report(meta: dict) -> str:
+    """Markdown-Report für docs/data_preparation.md."""
+    md = []
+    md.append("# CRISP-DM Phase 3: Data Preparation")
+    md.append("")
+    md.append(f"_Erstellt am {datetime.now().strftime('%Y-%m-%d %H:%M')}_")
+    md.append("")
+    md.append("---")
+    md.append("")
+    md.append("## Input-Output")
+    md.append("")
+    md.append("| Phase | Input | Output |")
+    md.append("|---|---|---|")
+    md.append("| Phase 2 (Data Understanding) | `data/raw/Detailed_Statistics_*.csv` | `docs/data_understanding.md` |")
+    md.append("| **Phase 3 (Data Preparation)** | `data/raw/*.csv` | `data/processed/iad_flights_{train,val}.parquet`<br>`docs/data_preparation.md`<br>`logs/data_preparation.log` |")
+    md.append("")
+    md.append("## Pipeline-Schritte")
+    md.append("")
+    md.append("```")
+    md.append("Roh-CSV  ->  load_bts_csv  ->  parse_types  ->  dropna  ->")
+    md.append("add_date_features  ->  add_time_features  ->  add_arrival_aggregate  ->")
+    md.append("add_cancellation  ->  make_target  ->  temporal_split  ->")
+    md.append("add_frequency_features (Train-only Ref)  ->  save parquet")
+    md.append("```")
+    md.append("")
+    md.append("## Getroffene Entscheidungen (Übernahme aus Phase 1+2)")
+    md.append("")
+    md.append("| # | Entscheidung | Auswirkung in Pipeline |")
+    md.append("|---|---|---|")
+    md.append("| 1 | Carrier = United Airlines (UA) only | Filter `carrier_code == 'UA'` (alle Daten ohnehin UA) |")
+    md.append("| 2 | Threshold = 15 Min | `delay_label = (departure_delay_min >= 15)` |")
+    md.append("| 3 | Verfrühte = pünktlich | Verfrühte Flüge bekommen `delay_label = 0` |")
+    md.append("| 4 | Cancelled/Diverted = Drop | `dropna(subset=['departure_delay_min'])` |")
+    md.append("| 5 | 2025 = Train, 2026 = Val | `split_date = 2026-01-01` |")
+    md.append("")
+
+    md.append("## Feature-Liste")
+    md.append("")
+    md.append(f"Insgesamt **{meta['n_features']} Features**, eingeteilt in Gruppen:")
+    md.append("")
+    md.append("| Gruppe | Features | Beschreibung |")
+    md.append("|---|---|---|")
+    md.append("| **Datum (zyklisch)** | `dow_sin`, `dow_cos`, `month_sin`, `month_cos` | Sinus/Cosinus-Encoding für Wochentag & Monat (Modell erkennt Zyklizität) |")
+    md.append("| **Datum (linear)** | `dayofweek`, `day`, `month`, `weekofyear`, `quarter`, `is_weekend`, `is_holiday` | Roh-Encoding |")
+    md.append("| **Tageszeit (zyklisch)** | `tod_sin`, `tod_cos` | Sinus/Cosinus für Minuten seit Mitternacht |")
+    md.append("| **Tageszeit (linear)** | `sched_dep_hour`, `sched_dep_minute`, `sched_dep_min_of_day`, `time_of_day` | Roh-Encoding + 4-Bucket (Nacht/Morgen/Mittag/Abend) |")
+    md.append("| **Strecke** | `sched_elapsed_min` | Proxy für Distanz (Kurz-/Langstrecke) |")
+    md.append("| **Frequency-Encoding** | `flight_combo_freq`, `dest_freq` | Häufigkeit der (carrier, dest, flight_number)-Kombination bzw. Destination |")
+    md.append("| **Arrival-Aggregate** | `origin_daily_arrival_delay_mean`, `origin_daily_arrival_n` | Mittlere Ankunftsverspätung an diesem Tag von dieser Origin |")
+    md.append("| **Cancellation-Aggregate** | `cancellations_on_day` | Anzahl Stornierungen am gleichen Tag (IAD-weit) |")
+    md.append("")
+    md.append("## Explizit ausgeschlossene Features (Leakage-Schutz)")
+    md.append("")
+    md.append("| Spalte | Grund |")
+    md.append("|---|---|")
+    md.append("| `actual_dep_time`, `actual_elapsed_min`, `wheels_off_time`, `taxi_out_min` | post-hoc Info |")
+    md.append("| Alle `delay_*_min` (Carrier/Weather/NAS/Security/Late Aircraft) | BTS attribuiert diese nachträglich |")
+    md.append("| `tail_number` | 99 % Missing |")
+    md.append("| `arrival_delay_min` | Target Leakage wenn Flugzeug ankommt |")
+    md.append("")
+
+    md.append("## Temporal-Split")
+    md.append("")
+    md.append(f"- **Split-Datum:** {meta['split_date']}")
+    md.append(f"- **Train:** {meta['n_train']:,} Zeilen, {meta['date_train_min']} -> {meta['date_train_max']}")
+    md.append(f"- **Val:**   {meta['n_val']:,} Zeilen, {meta['date_val_min']} -> {meta['date_val_max']}")
+    md.append(f"- **Train Klassen-Balance:** {meta['train_delayed_pct']:.2f} % verspätet")
+    md.append(f"- **Val Klassen-Balance:**   {meta['val_delayed_pct']:.2f} % verspätet")
+    md.append("")
+    md.append("> **Anmerkung zur Saisonalität:** Val enthält nur Jan-Apr, also Winter + früher Frühling. Sommerverspätungen (Gewitter) und Thanksgiving/Christmas-Spitzen sind nicht in Val enthalten. Wird in Phase 5 (Evaluation) thematisiert.")
+    md.append("")
+
+    md.append("## Train vs. Val – Verteilungs-Check")
+    md.append("")
+    md.append("TBD: wird beim Lauf ergänzt (Distinct counts, etc.)")
+    md.append("")
+
+    md.append("## Output-Dateien")
+    md.append("")
+    md.append("| Datei | Größe (typisch) | Inhalt |")
+    md.append("|---|---|---|")
+    md.append("| `data/processed/iad_flights_train.parquet` | ~5-10 MB | Trainingsdaten mit Features + Target |")
+    md.append("| `data/processed/iad_flights_val.parquet`   | ~2-4 MB | Validierungsdaten |")
+    md.append("| `data/processed/feature_metadata.json` | <10 KB | Feature-Liste + Split-Statistiken |")
+    md.append("")
+
+    md.append("## Nächste Schritte (CRISP-DM Phase 4: Modeling)")
+    md.append("")
+    md.append("1. **Baseline-Modell:** Logistic Regression (mit `class_weight='balanced'`)")
+    md.append("2. **Baum-Modelle:** Random Forest, dann XGBoost/LightGBM")
+    md.append("3. **Hyperparameter-Tuning:** Optuna oder GridSearch")
+    md.append("4. **Evaluation:** PR-AUC, F1, Brier Score, Confusion Matrix")
+    md.append("5. **Feature-Importance:** SHAP-Werte für die Top-Features")
+    md.append("6. **Modell-Persistierung:** Joblib/Pickle")
+    md.append("")
+
+    return "\n".join(md)
+
+
+# ---------------------------------------------------------------------------
+# Hauptprogramm
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    meta = run_pipeline()
+    report = build_report(meta)
+    report_path = DOCS / "data_preparation.md"
+    report_path.write_text(report, encoding="utf-8")
+    log.info("\nReport geschrieben: %s", report_path)
+    log.info("=" * 70)
+    log.info("Fertig.")
+    log.info("  Train:  %s (%.1f%% verspaetet)", f"{meta['n_train']:,}",
+             meta['train_delayed_pct'])
+    log.info("  Val:    %s (%.1f%% verspaetet)", f"{meta['n_val']:,}",
+             meta['val_delayed_pct'])
+    log.info("  Features: %d | Metadata: %d", meta['n_features'], meta['n_metadata'])
+    log.info("=" * 70)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

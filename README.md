@@ -52,7 +52,7 @@ pip install -r requirements.txt
 |---|---|---|
 | 1. Business Understanding | erledigt | `docs/data_understanding.md` Abschnitt 1 |
 | 2. Data Understanding | erledigt | `docs/data_understanding.md` Abschnitt 2 |
-| 3. Data Preparation | offen | – |
+| 3. Data Preparation | erledigt | `docs/data_preparation.md` + `data/processed/*.parquet` |
 | 4. Modeling | offen | – |
 | 5. Evaluation | offen | – |
 | 6. Deployment | offen | – |
@@ -82,6 +82,21 @@ python src\01_business_data_understanding.py
 ```
 
 Output: `docs/data_understanding.md`
+
+### `src/02_data_preparation.py`
+
+Lädt alle 4 BTS-CSVs, bereinigt sie, leitet 23 Features ab, erstellt die
+Target-Variable und führt den temporalen Train/Val-Split durch.
+
+```powershell
+python src\02_data_preparation.py
+```
+
+Output:
+- `data/processed/iad_flights_train.parquet` (35.158 Zeilen)
+- `data/processed/iad_flights_val.parquet` (12.059 Zeilen)
+- `data/processed/feature_metadata.json`
+- `docs/data_preparation.md`
 
 ## Selbst getroffene Entscheidungen (zu validieren)
 
