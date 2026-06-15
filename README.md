@@ -21,7 +21,8 @@ Methode: **CRISP-DM** (Business Understanding → Data Understanding → Data Pr
 ISE-02-Mini-Case/
 ├── data/
 │   ├── raw/                    # Manuelle Downloads (BTS)
-│   │   ├── Detailed_Statistics_Departures.csv    (4.8 MB, 47.217 Flüge)
+│   │   ├── Detailed_Statistics_Departures.csv    (4.9 MB, 47.217 Flüge)
+│   │   ├── Detailed_Statistics_Arrivals.csv      (4.9 MB, 47.212 Flüge)
 │   │   ├── Detailed_Statistics_Cancellation.csv  (12.5 KB, 356 Events)
 │   │   └── Detailed_Statistics_Diversion.csv     (5.3 KB, 121 Events)
 │   └── processed/              # Aufbereitete Daten (Phase 3)
@@ -84,10 +85,11 @@ Output: `docs/data_understanding.md`
 
 ## Selbst getroffene Entscheidungen (zu validieren)
 
-1. **Carrier = UA only** — die heruntergeladene Departures-Datei enthält ausschließlich UA. Limitation dokumentieren.
+1. **Carrier = UA only (FESTLEGUNG)** — alle vier BTS-Tabellen enthalten ausschließlich United-Airlines-Flüge am IAD. Limitation wird im Bericht dokumentiert.
 2. **Verfrühte Flüge (< 0 Min) = Klasse 0** — BTS-Konvention; operativ pünktlich.
 3. **Cancelled/Diverted = Drop** für die Hauptaufgabe; separat analysierbar.
 4. **2025 = Training, 2026 = Validation** (temporal split, falls genug Daten).
+5. **Keine Airborne_Time-Tabelle** verfügbar — wird in der Modellierung nicht verwendet.
 
 ## Nächste Schritte (Phase 3)
 
@@ -98,9 +100,13 @@ Output: `docs/data_understanding.md`
 5. Iteration: Random Forest → XGBoost/LightGBM
 6. Modell-Evaluation mit PR-AUC, F1, Brier Score
 
-## Offene Tabellen (ausstehender manueller Download)
+## Verfügbare Daten (4 Tabellen)
 
-- `Detailed_Statistics_Arrivals.csv`
-- `Detailed_Statistics_Airborne_Time.csv`
+| Tabelle | Zeilen | Beschreibung |
+|---|---:|---|
+| `Detailed_Statistics_Departures.csv` | 47.217 | Abflüge ab IAD (Haupttarget: `departure_delay_min`) |
+| `Detailed_Statistics_Arrivals.csv` | 47.212 | Ankünfte nach IAD (Sekundär-Analyse, evtl. Feature-Quelle) |
+| `Detailed_Statistics_Cancellation.csv` | 356 | Stornierungen |
+| `Detailed_Statistics_Diversion.csv` | 121 | Umleitungen |
 
-Sobald diese vorliegen, wird `01_business_data_understanding.py` erweitert.
+Airborne_Time existiert nicht und wird nicht verwendet.

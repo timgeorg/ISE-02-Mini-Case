@@ -1,6 +1,6 @@
 # CRISP-DM Phase 1 & 2: Business- und Data-Understanding
 
-_Erstellt am 2026-06-15 16:43_
+_Erstellt am 2026-06-15 16:56_
 
 ---
 
@@ -58,8 +58,9 @@ delay_label = 1  falls departure_delay_min >= 15
 
 | Datei | Größe | Zeilen | Spalten |
 |---|---|---|---|
+| `data/raw/Detailed_Statistics_Arrivals.csv` | 4,903.5 KB | – | – |
 | `data/raw/Detailed_Statistics_Cancellation.csv` | 12.5 KB | – | – |
-| `data/raw/Detailed_Statistics_Departures.csv` | 4,879.4 KB | – | – |
+| `data/raw/Detailed_Statistics_Departures.csv` | 4,925.5 KB | – | – |
 | `data/raw/Detailed_Statistics_Diversion.csv` | 5.3 KB | – | – |
 
 ### 2.2 Departure-Tabelle – Hauptmetriken
@@ -112,7 +113,53 @@ delay_label = 1  falls departure_delay_min >= 15
 | `tail_number` Missing | 330 / 47,217 (0.7 %) | Feature nicht nutzbar |
 | `departure_delay_min` NaN | 0 (0.0 %) | Diese Zeilen für Klassifikation ausschließen |
 
-### 2.4 Cancellation & Diversion – Ergänzende Tabellen
+### 2.4 Arrival-Tabelle – Sekundäranalyse (Ankunftsverspätung in IAD)
+
+- **Zeilen gesamt:** 47,212
+- **Zeitraum:** 2025-01-01 → 2026-04-30
+- **Carrier:** ['UA']
+- **Herkunftsflughäfen (Unique):** 61
+
+**Top-10 Herkunftsflughäfen (nach IAD):**
+
+| Rang | IATA-Code | Anzahl Flüge |
+|---:|---|---:|
+| 1 | DEN | 3,552 |
+| 2 | SFO | 3,429 |
+| 3 | LAX | 2,975 |
+| 4 | MCO | 2,653 |
+| 5 | ORD | 2,559 |
+| 6 | IAH | 2,462 |
+| 7 | BOS | 2,028 |
+| 8 | EWR | 1,856 |
+| 9 | TPA | 1,683 |
+| 10 | LAS | 1,484 |
+
+**Verspätungs-Verteilung bei Ankunft (Minuten):**
+
+| Kennzahl | Wert |
+|---|---|
+| Mittelwert | 2.66 |
+| Median | -8.00 |
+| Std.-Abw. | 48.32 |
+| Min | -68.00 |
+| Max | 1389.00 |
+
+**Klassen-Verteilung Arrival Delay (≥ 15 Min):**
+
+| Klasse | Bedeutung | Anzahl | Anteil |
+|---:|---|---:|---:|
+| 1 | Verspätete Ankunft (≥ 15 Min) | 7,652 | 16.2 % |
+| 0 | Pünktliche Ankunft (< 15 Min) | 39,560 | 83.8 % |
+| (negativ) | Davon verfrüht (< 0 Min) | 31,362 | 66.4 % der Gesamtflüge |
+
+> **Verwendung im Case:**
+>
+> - **Hauptaufgabe bleibt Abflugverspätung** (Departures). Arrivals können als **zusätzliches Feature** dienen: `avg_arrival_delay_yesterday` oder `inbound_delay_likely` (ein Flugzeug, das verspätet ankommt, hat ein höheres Risiko, verspätet abzufliegen).
+> - Aktuell fehlt aber das Join-Schlüssel-Feld (Tail Number ist in Departures zu 99 % leer) → diese Verknüpfung ist in unseren Daten **nicht direkt möglich**.
+> - Alternative: Rollende Mittel der historischen Ankunftsverspätung pro `(origin_airport, hour_of_day, dayofweek)` als Feature.
+
+### 2.5 Cancellation & Diversion – Ergänzende Tabellen
 
 | Tabelle | n | Zeitraum | Carrier | Fehlende Tail-Numbers |
 |---|---:|---|---|---|
@@ -123,7 +170,7 @@ delay_label = 1  falls departure_delay_min >= 15
 Sie fließen als **zusätzliche Features** ein (z. B. „Carrier hatte gestern Cancellation an diesem Flughafen“),
 aber **nicht in die Target-Variable** der Hauptaufgabe.
 
-### 2.5 Schema – Spalten-Definitionen (Departures)
+### 2.6 Schema – Spalten-Definitionen (Departures)
 
 | Spalte | Typ | Bedeutung | Nutzung in Modellierung |
 |---|---|---|---|
@@ -145,7 +192,7 @@ aber **nicht in die Target-Variable** der Hauptaufgabe.
 | `delay_security_min` | int | Verspätung Sicherheit | ⚠️ Ebenfalls nachträglich |
 | `delay_late_aircraft_min` | int | Verspätung durch Vorgänger-Flugzeug | ⚠️ Ebenfalls nachträglich |
 
-### 2.6 Feature-Kandidaten (Finale Vorauswahl)
+### 2.7 Feature-Kandidaten (Finale Vorauswahl)
 
 **Zugelassene Features (pre-departure, kein Leakage):**
 1. `date` → abgeleitet: `dayofweek`, `month`, `day`, `is_weekend`, `is_holiday` (US-Feiertage)
@@ -165,7 +212,7 @@ aber **nicht in die Target-Variable** der Hauptaufgabe.
 - Vorgänger-Flugzeug-Verspätung (über `tail_number` nicht möglich → verwerfen)
 - Feiertage in Zieldestination
 
-### 2.7 Daten-Hypothesen für Phase 3 (Data Preparation)
+### 2.8 Daten-Hypothesen für Phase 3 (Data Preparation)
 
 1. **Saisonalität**: Verspätungen sind im Winter (Schnee) und Sommer (Gewitter) höher.
 2. **Tageszeit**: Frühe Flüge und Stoßzeiten am Abend sind verspätungsanfälliger.

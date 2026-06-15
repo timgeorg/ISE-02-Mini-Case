@@ -37,6 +37,14 @@ DEPARTURE_COLS = [
     "delay_carrier_min", "delay_weather_min", "delay_nas_min",
     "delay_security_min", "delay_late_aircraft_min",
 ]
+ARRIVAL_COLS = [
+    "carrier_code", "date", "flight_number", "tail_number", "origin_airport",
+    "sched_arr_time", "actual_arr_time",
+    "sched_elapsed_min", "actual_elapsed_min",
+    "arrival_delay_min", "wheels_on_time", "taxi_in_min",
+    "delay_carrier_min", "delay_weather_min", "delay_nas_min",
+    "delay_security_min", "delay_late_aircraft_min",
+]
 CANCELLATION_COLS = ["carrier_code", "date", "flight_number", "tail_number", "dest_airport"]
 DIVERSION_COLS = ["carrier_code", "date", "flight_number", "tail_number", "dest_airport"]
 
@@ -84,17 +92,29 @@ def parse_minimal_types(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def parse_arrival_types(df: pd.DataFrame) -> pd.DataFrame:
+    """Konvertiert Strings in passende Typen für Arrivals."""
+    df["date"] = pd.to_datetime(df["date"], format="%m/%d/%Y", errors="coerce")
+    int_cols = ["flight_number", "sched_elapsed_min", "actual_elapsed_min",
+                "arrival_delay_min", "taxi_in_min",
+                "delay_carrier_min", "delay_weather_min", "delay_nas_min",
+                "delay_security_min", "delay_late_aircraft_min"]
+    for c in int_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64")
+    return df
+
+
 # ---------------------------------------------------------------------------
 # Analyse
 # ---------------------------------------------------------------------------
 
-def analyse_departures(df: pd.DataFrame) -> dict:
-    """Bereitet Kennzahlen für die Departure-Tabelle auf."""
+def analyse_flight_table(df: pd.DataFrame, delay_col: str, group_col: str) -> dict:
+    """Bereitet Kennzahlen für eine Flugtabelle (Departures oder Arrivals) auf."""
     n = len(df)
-    delay = df["departure_delay_min"]
+    delay = df[delay_col]
     on_time = (delay < DELAY_THRESHOLD_MIN).sum()
     delayed = (delay >= DELAY_THRESHOLD_MIN).sum()
-    cancelled_proxy = df["departure_delay_min"].isna().sum()  # NaN = ggf. storniert
+    cancelled_proxy = delay.isna().sum()  # NaN = ggf. storniert
     early = (delay < 0).sum()
 
     return {
@@ -102,8 +122,8 @@ def analyse_departures(df: pd.DataFrame) -> dict:
         "date_min": df["date"].min().strftime("%Y-%m-%d") if df["date"].notna().any() else "n/a",
         "date_max": df["date"].max().strftime("%Y-%m-%d") if df["date"].notna().any() else "n/a",
         "unique_carriers": sorted(df["carrier_code"].dropna().unique().tolist()),
-        "n_unique_destinations": df["dest_airport"].nunique(),
-        "top_destinations": df["dest_airport"].value_counts().head(10).to_dict(),
+        "n_unique_groups": df[group_col].nunique(),
+        "top_groups": df[group_col].value_counts().head(10).to_dict(),
         "delay_mean": float(delay.mean()) if delay.notna().any() else None,
         "delay_median": float(delay.median()) if delay.notna().any() else None,
         "delay_std": float(delay.std()) if delay.notna().any() else None,
@@ -120,6 +140,10 @@ def analyse_departures(df: pd.DataFrame) -> dict:
         "missing_tail_number": int(df["tail_number"].isna().sum()),
         "missing_tail_pct": float(df["tail_number"].isna().mean() * 100) if n else 0.0,
     }
+
+
+# Rückwärtskompatibilität
+analyse_departures = analyse_flight_table
 
 
 def analyse_minimal(df: pd.DataFrame, name: str) -> dict:
@@ -141,7 +165,7 @@ def analyse_minimal(df: pd.DataFrame, name: str) -> dict:
 # Report-Generator (Markdown)
 # ---------------------------------------------------------------------------
 
-def build_report(dep_stats, canc_stats, div_stats, dep_df) -> str:
+def build_report(dep_stats, arr_stats, canc_stats, div_stats, dep_df, arr_df) -> str:
     md = []
     md.append("# CRISP-DM Phase 1 & 2: Business- und Data-Understanding")
     md.append("")
@@ -207,7 +231,7 @@ def build_report(dep_stats, canc_stats, div_stats, dep_df) -> str:
     md.append("")
     md.append("| Datei | Größe | Zeilen | Spalten |")
     md.append("|---|---|---|---|")
-    for f in RAW.glob("Detailed_Statistics_*.csv"):
+    for f in sorted(RAW.glob("Detailed_Statistics_*.csv")):
         size_kb = f.stat().st_size / 1024
         md.append(f"| `data/raw/{f.name}` | {size_kb:,.1f} KB | – | – |")
     md.append("")
@@ -217,14 +241,14 @@ def build_report(dep_stats, canc_stats, div_stats, dep_df) -> str:
     md.append(f"- **Zeilen gesamt:** {dep_stats['n']:,}")
     md.append(f"- **Zeitraum:** {dep_stats['date_min']} → {dep_stats['date_max']}")
     md.append(f"- **Carrier (Unique):** {dep_stats['unique_carriers']}")
-    md.append(f"- **Zielflughäfen (Unique):** {dep_stats['n_unique_destinations']}")
+    md.append(f"- **Zielflughäfen (Unique):** {dep_stats['n_unique_groups']}")
     md.append("")
 
     md.append("**Top-10 Destinationen (von IAD aus):**")
     md.append("")
     md.append("| Rang | IATA-Code | Anzahl Flüge |")
     md.append("|---:|---|---:|")
-    for i, (dest, cnt) in enumerate(dep_stats["top_destinations"].items(), 1):
+    for i, (dest, cnt) in enumerate(dep_stats["top_groups"].items(), 1):
         md.append(f"| {i} | {dest} | {cnt:,} |")
     md.append("")
 
@@ -259,7 +283,46 @@ def build_report(dep_stats, canc_stats, div_stats, dep_df) -> str:
     md.append(f"| `departure_delay_min` NaN | {dep_stats['missing_delay']:,} ({dep_stats['missing_delay_pct']:.1f} %) | Diese Zeilen für Klassifikation ausschließen |")
     md.append("")
 
-    md.append("### 2.4 Cancellation & Diversion – Ergänzende Tabellen")
+    md.append("### 2.4 Arrival-Tabelle – Sekundäranalyse (Ankunftsverspätung in IAD)")
+    md.append("")
+    md.append(f"- **Zeilen gesamt:** {arr_stats['n']:,}")
+    md.append(f"- **Zeitraum:** {arr_stats['date_min']} → {arr_stats['date_max']}")
+    md.append(f"- **Carrier:** {arr_stats['unique_carriers']}")
+    md.append(f"- **Herkunftsflughäfen (Unique):** {arr_stats['n_unique_groups']}")
+    md.append("")
+    md.append("**Top-10 Herkunftsflughäfen (nach IAD):**")
+    md.append("")
+    md.append("| Rang | IATA-Code | Anzahl Flüge |")
+    md.append("|---:|---|---:|")
+    for i, (orig, cnt) in enumerate(arr_stats["top_groups"].items(), 1):
+        md.append(f"| {i} | {orig} | {cnt:,} |")
+    md.append("")
+    md.append("**Verspätungs-Verteilung bei Ankunft (Minuten):**")
+    md.append("")
+    md.append(f"| Kennzahl | Wert |")
+    md.append(f"|---|---|")
+    md.append(f"| Mittelwert | {arr_stats['delay_mean']:.2f} |")
+    md.append(f"| Median | {arr_stats['delay_median']:.2f} |")
+    md.append(f"| Std.-Abw. | {arr_stats['delay_std']:.2f} |")
+    md.append(f"| Min | {arr_stats['delay_min']:.2f} |")
+    md.append(f"| Max | {arr_stats['delay_max']:.2f} |")
+    md.append("")
+    md.append("**Klassen-Verteilung Arrival Delay (≥ 15 Min):**")
+    md.append("")
+    md.append(f"| Klasse | Bedeutung | Anzahl | Anteil |")
+    md.append(f"|---:|---|---:|---:|")
+    md.append(f"| 1 | Verspätete Ankunft (≥ 15 Min) | {arr_stats['delayed_count']:,} | {arr_stats['delayed_pct']:.1f} % |")
+    md.append(f"| 0 | Pünktliche Ankunft (< 15 Min) | {arr_stats['on_time_count']:,} | {arr_stats['on_time_pct']:.1f} % |")
+    md.append(f"| (negativ) | Davon verfrüht (< 0 Min) | {arr_stats['early_count']:,} | {arr_stats['early_pct']:.1f} % der Gesamtflüge |")
+    md.append("")
+    md.append("> **Verwendung im Case:**")
+    md.append(">")
+    md.append("> - **Hauptaufgabe bleibt Abflugverspätung** (Departures). Arrivals können als **zusätzliches Feature** dienen: `avg_arrival_delay_yesterday` oder `inbound_delay_likely` (ein Flugzeug, das verspätet ankommt, hat ein höheres Risiko, verspätet abzufliegen).")
+    md.append("> - Aktuell fehlt aber das Join-Schlüssel-Feld (Tail Number ist in Departures zu 99 % leer) → diese Verknüpfung ist in unseren Daten **nicht direkt möglich**.")
+    md.append("> - Alternative: Rollende Mittel der historischen Ankunftsverspätung pro `(origin_airport, hour_of_day, dayofweek)` als Feature.")
+    md.append("")
+
+    md.append("### 2.5 Cancellation & Diversion – Ergänzende Tabellen")
     md.append("")
     md.append("| Tabelle | n | Zeitraum | Carrier | Fehlende Tail-Numbers |")
     md.append(f"|---|---:|---|---|---|")
@@ -271,7 +334,7 @@ def build_report(dep_stats, canc_stats, div_stats, dep_df) -> str:
     md.append("aber **nicht in die Target-Variable** der Hauptaufgabe.")
     md.append("")
 
-    md.append("### 2.5 Schema – Spalten-Definitionen (Departures)")
+    md.append("### 2.6 Schema – Spalten-Definitionen (Departures)")
     md.append("")
     md.append("| Spalte | Typ | Bedeutung | Nutzung in Modellierung |")
     md.append("|---|---|---|---|")
@@ -293,7 +356,7 @@ def build_report(dep_stats, canc_stats, div_stats, dep_df) -> str:
     md.append("| `delay_security_min` | int | Verspätung Sicherheit | ⚠️ Ebenfalls nachträglich |")
     md.append("| `delay_late_aircraft_min` | int | Verspätung durch Vorgänger-Flugzeug | ⚠️ Ebenfalls nachträglich |")
     md.append("")
-    md.append("### 2.6 Feature-Kandidaten (Finale Vorauswahl)")
+    md.append("### 2.7 Feature-Kandidaten (Finale Vorauswahl)")
     md.append("")
     md.append("**Zugelassene Features (pre-departure, kein Leakage):**")
     md.append("1. `date` → abgeleitet: `dayofweek`, `month`, `day`, `is_weekend`, `is_holiday` (US-Feiertage)")
@@ -314,7 +377,7 @@ def build_report(dep_stats, canc_stats, div_stats, dep_df) -> str:
     md.append("- Feiertage in Zieldestination")
     md.append("")
 
-    md.append("### 2.7 Daten-Hypothesen für Phase 3 (Data Preparation)")
+    md.append("### 2.8 Daten-Hypothesen für Phase 3 (Data Preparation)")
     md.append("")
     md.append("1. **Saisonalität**: Verspätungen sind im Winter (Schnee) und Sommer (Gewitter) höher.")
     md.append("2. **Tageszeit**: Frühe Flüge und Stoßzeiten am Abend sind verspätungsanfälliger.")
@@ -343,43 +406,65 @@ def build_report(dep_stats, canc_stats, div_stats, dep_df) -> str:
 
 def main() -> int:
     print("=" * 70)
-    print("CRISP-DM Phase 1+2 – Business & Data Understanding")
+    print("CRISP-DM Phase 1+2 - Business & Data Understanding")
     print("=" * 70)
 
     # 1. Lade Daten
-    print("\n[1/3] Lade Departures …")
+    print("\n[1/4] Lade Departures ...")
     dep_raw = load_bts_csv(RAW / "Detailed_Statistics_Departures.csv", DEPARTURE_COLS, "Departures")
     dep = parse_departure_types(dep_raw)
-    print(f"      -> {len(dep):,} Zeilen geladen, "
+    print(f"      -> {len(dep):,} Zeilen, "
           f"{dep['date'].min():%Y-%m-%d} bis {dep['date'].max():%Y-%m-%d}")
 
-    print("[2/3] Lade Cancellation …")
+    print("[2/4] Lade Arrivals ...")
+    arr_path = RAW / "Detailed_Statistics_Arrivals.csv"
+    if arr_path.exists():
+        arr_raw = load_bts_csv(arr_path, ARRIVAL_COLS, "Arrivals")
+        arr = parse_arrival_types(arr_raw)
+        print(f"      -> {len(arr):,} Zeilen, "
+              f"{arr['date'].min():%Y-%m-%d} bis {arr['date'].max():%Y-%m-%d}")
+    else:
+        arr = pd.DataFrame(columns=ARRIVAL_COLS)
+        print("      -> nicht vorhanden, wird uebersprungen")
+
+    print("[3/4] Lade Cancellation ...")
     canc_raw = load_bts_csv(RAW / "Detailed_Statistics_Cancellation.csv", CANCELLATION_COLS, "Cancellation")
     canc = parse_minimal_types(canc_raw)
-    print(f"      → {len(canc):,} Zeilen geladen")
+    print(f"      -> {len(canc):,} Zeilen")
 
-    print("[3/3] Lade Diversion …")
+    print("[4/4] Lade Diversion ...")
     div_raw = load_bts_csv(RAW / "Detailed_Statistics_Diversion.csv", DIVERSION_COLS, "Diversion")
     div = parse_minimal_types(div_raw)
-    print(f"      → {len(div):,} Zeilen geladen")
+    print(f"      -> {len(div):,} Zeilen")
 
     # 2. Analysen
-    print("\nAnalysiere Departures …")
-    dep_stats = analyse_departures(dep)
+    print("\nAnalysiere ...")
+    dep_stats = analyse_flight_table(dep, "departure_delay_min", "dest_airport")
+    arr_stats = analyse_flight_table(arr, "arrival_delay_min", "origin_airport") if len(arr) else {
+        "n": 0, "date_min": "n/a", "date_max": "n/a", "unique_carriers": [],
+        "n_unique_groups": 0, "top_groups": {}, "delay_mean": 0, "delay_median": 0,
+        "delay_std": 0, "delay_min": 0, "delay_max": 0, "on_time_count": 0,
+        "on_time_pct": 0, "delayed_count": 0, "delayed_pct": 0, "early_count": 0,
+        "early_pct": 0, "missing_delay": 0, "missing_delay_pct": 0,
+        "missing_tail_number": 0, "missing_tail_pct": 0,
+    }
     canc_stats = analyse_minimal(canc, "Cancellation")
     div_stats = analyse_minimal(div, "Diversion")
 
     # 3. Report schreiben
     print(f"\nSchreibe Report: {REPORT_PATH}")
-    report = build_report(dep_stats, canc_stats, div_stats, dep)
+    report = build_report(dep_stats, arr_stats, canc_stats, div_stats, dep, arr)
     REPORT_PATH.write_text(report, encoding="utf-8")
-    print(f"      → {len(report):,} Zeichen geschrieben")
+    print(f"      -> {len(report):,} Zeichen geschrieben")
 
     print("\n" + "=" * 70)
-    print("✓ Fertig.")
+    print("Fertig.")
     print(f"  Report:     {REPORT_PATH}")
-    print(f"  Departures: {dep_stats['n']:,} Flüge, "
-          f"{dep_stats['delayed_pct']:.1f}% verspätet (≥15 Min)")
+    print(f"  Departures: {dep_stats['n']:,} Fluege, "
+          f"{dep_stats['delayed_pct']:.1f}% verspaetet (>=15 Min)")
+    if arr_stats["n"]:
+        print(f"  Arrivals:   {arr_stats['n']:,} Fluege, "
+              f"{arr_stats['delayed_pct']:.1f}% verspaetete Ankunft (>=15 Min)")
     print("=" * 70)
     return 0
 
