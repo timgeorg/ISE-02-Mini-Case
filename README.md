@@ -1,80 +1,106 @@
 # ISE-02-Mini-Case – Flugverspätungs-Vorhersage (IAD)
 
 Mini-Case zur Vorhersage von Flugverspätungen am Washington Dulles International (IAD).
+Methode: **CRISP-DM** (Business Understanding → Data Understanding → Data Preparation → Modeling → Evaluation → Deployment).
+
+## Business Problem
+
+> "Verspätungen frühzeitig erkennen." — Klassifikation, Airline Delay Dataset, bessere Ressourcenplanung.
 
 ## Datenquelle
 
-- **BTS TranStats – On-Time Performance** (Tabelle 236)
-- Web: <https://www.transtats.bts.gov/ONTIME/>
-- Zeitraum: 2025-01 bis 2026-05
-- Rohformat: ZIP mit monatlicher CSV (alle Felder, ~200 MB pro Monat)
+- **BTS TranStats – On-Time Departures** (manuell heruntergeladen)
+- Web: <https://www.transtats.bts.gov/ONTIME/Departures.aspx>
+- Airport: IAD (Washington Dulles International)
+- Carrier (in den vorhandenen Daten): **United Airlines (UA)**
+- Zeitraum: **2025-01-01 bis 2026-04-30** (16 Monate, 47.217 Flüge)
 
 ## Projektstruktur
 
 ```
 ISE-02-Mini-Case/
 ├── data/
-│   ├── raw/         # Heruntergeladene Monats-CSVs
-│   └── processed/   # Gefilterte/vereinigte Daten
-├── docs/            # Aufgabenstellung
-├── logs/            # Log-Files der Skripte
-└── src/             # Python-Skripte
+│   ├── raw/                    # Manuelle Downloads (BTS)
+│   │   ├── Detailed_Statistics_Departures.csv    (4.8 MB, 47.217 Flüge)
+│   │   ├── Detailed_Statistics_Cancellation.csv  (12.5 KB, 356 Events)
+│   │   └── Detailed_Statistics_Diversion.csv     (5.3 KB, 121 Events)
+│   └── processed/              # Aufbereitete Daten (Phase 3)
+├── docs/
+│   ├── Aufgabenstellung.md
+│   └── data_understanding.md   # Output von src/01_business_data_understanding.py
+├── logs/                       # Skript-Logs
+├── src/
+│   └── 01_business_data_understanding.py
+├── .venv/                      # Virtuelle Umgebung (nicht in Git)
+├── requirements.txt
+└── README.md
 ```
 
 ## Setup
 
 ```powershell
-# 1. Virtuelle Umgebung anlegen (einmalig)
+# Einmalig (venv wurde bereits angelegt)
 python -m venv .venv
-
-# 2. Aktivieren
 .\.venv\Scripts\Activate.ps1
-
-# 3. Abhängigkeiten installieren
-pip install requests pandas pyarrow
+pip install -r requirements.txt
 ```
+
+## CRISP-DM-Status
+
+| Phase | Status | Output |
+|---|---|---|
+| 1. Business Understanding | erledigt | `docs/data_understanding.md` Abschnitt 1 |
+| 2. Data Understanding | erledigt | `docs/data_understanding.md` Abschnitt 2 |
+| 3. Data Preparation | offen | – |
+| 4. Modeling | offen | – |
+| 5. Evaluation | offen | – |
+| 6. Deployment | offen | – |
+
+## Wichtigste Erkenntnisse aus Phase 1+2
+
+- **47.217 Flüge** von 01.01.2025 bis 30.04.2026
+- **Klassen-Verteilung**: 15.7 % verspätet (≥ 15 Min) vs. 84.3 % pünktlich → **Imbalance**
+- **63 verschiedene Zielflughäfen** (Top: DEN, SFO, LAX, MCO, ORD)
+- **Tail Number** zu 99 % fehlend → **nicht als Feature nutzbar**
+- **5 Delay-Kategorien** (Carrier/Weather/NAS/Security/Late Aircraft) sind von BTS **nachträglich attribuiert** → Leakage-Risiko, deshalb ausschließen
+- **Vorgeschlagene Target-Variable**: `departure_delay_min >= 15`
+- **Vorgeschlagene Features**: Datum, sched_dep_time, dest_airport, sched_elapsed_min
+- **Carrier konstant** (nur UA) → vereinfacht die Modellierung
 
 ## Skripte
 
-### 1. `src/download_bts_data.py`
+### `src/01_business_data_understanding.py`
 
-Lädt monatliche On-Time-Daten von BTS herunter und entpackt sie nach
-`data/raw/`. Lädt **alle** Felder, damit das Feature-Engineering flexibel
-gestaltet werden kann.
-
-**Aufruf (mit aktivierter venv):**
+Lädt die 3 BTS-CSVs (mit korrekter Behandlung der 9-zeiligen Metadaten-Köpfe),
+berechnet Schlüssel-Kennzahlen und erzeugt den Markdown-Bericht.
 
 ```powershell
-python src/download_bts_data.py
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONIOENCODING = "utf-8"
+python src\01_business_data_understanding.py
 ```
 
-**Alternative** (ohne Aktivierung, direkter Aufruf):
+Output: `docs/data_understanding.md`
 
-```powershell
-.\.venv\Scripts\python.exe src\download_bts_data.py
-```
+## Selbst getroffene Entscheidungen (zu validieren)
 
-**Wichtige Parameter** (im Skript anpassbar):
-- `YEARS = [2025, 2026]`
-- `MONTHS = list(range(1, 13))` → wird automatisch für 2026 auf Mai begrenzt
-- `REQUEST_TIMEOUT = 300` (Sekunden pro Datei)
-- `RETRY_COUNT = 3`
+1. **Carrier = UA only** — die heruntergeladene Departures-Datei enthält ausschließlich UA. Limitation dokumentieren.
+2. **Verfrühte Flüge (< 0 Min) = Klasse 0** — BTS-Konvention; operativ pünktlich.
+3. **Cancelled/Diverted = Drop** für die Hauptaufgabe; separat analysierbar.
+4. **2025 = Training, 2026 = Validation** (temporal split, falls genug Daten).
 
-## Datenaufkommen
+## Nächste Schritte (Phase 3)
 
-| Zeitraum | Monate | ~Zeilen gesamt | Größe Roh |
-|----------|--------|----------------|-----------|
-| 2025-01 – 2026-05 | 17 | ~14 Mio. | ~3,5 GB |
+1. Saubere Pipeline: laden → bereinigen → Features ableiten → speichern als `data/processed/iad_flights.parquet`
+2. Feature-Engineering: Datums-Features, Strecken-Features, Holiday-Flags (US-Feiertage)
+3. Train/Validation-Split
+4. Baseline-Modell: Logistic Regression
+5. Iteration: Random Forest → XGBoost/LightGBM
+6. Modell-Evaluation mit PR-AUC, F1, Brier Score
 
-> **Hinweis**: Wir laden **alle** US-Flüge herunter, da die BTS-API keine
-> Flughafen-Vorabfilterung erlaubt. Das Filtern auf IAD passiert
-> **nach** dem Download in einem separaten Skript.
+## Offene Tabellen (ausstehender manueller Download)
 
-## Nächste Schritte (geplant)
+- `Detailed_Statistics_Arrivals.csv`
+- `Detailed_Statistics_Airborne_Time.csv`
 
-1. ✓ Download-Skript (dieses Skript)
-2. ⬜ Filter-Skript: nur IAD-Flüge, relevante Felder
-3. ⬜ Merge-Skript: alle Monate zu einer Datei zusammenfügen
-4. ⬜ EDA & Feature Engineering
-5. ⬜ Train/Val-Split (Temporal: 2025 = Train, 2026 Q1-Q2 = Val)
-6. ⬜ Modell-Training & Evaluation
+Sobald diese vorliegen, wird `01_business_data_understanding.py` erweitert.
