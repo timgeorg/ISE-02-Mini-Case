@@ -394,26 +394,37 @@ def select_feature_columns(df: pd.DataFrame) -> tuple[list[str], list[str]]:
     """Wählt finale Feature- und Metadata-Spalten.
 
     Returns: (feature_cols, metadata_cols)
+
+    Version 2026-06-16 (Diskussion):
+      - Reduziert: day, quarter, weekofyear, is_free_day, time_of_day (kategorisch),
+        sched_dep_minute, origin_*_n, flight_combo_freq
+      - Hinzu: temp_c, wind_kts, precip_1h_mm, pressure_hpa (Wetter),
+        dest_3d_arrival_delay_mean, is_congestion_window
     """
     feature_cols = [
         # Datum (zyklisch)
         "dow_sin", "dow_cos", "month_sin", "month_cos",
-        # Datum (linear)
-        "dayofweek", "day", "month", "weekofyear", "quarter",
-        "is_weekend", "is_holiday", "is_school_break", "is_free_day",
-        # Tageszeit
-        "sched_dep_hour", "sched_dep_minute", "sched_dep_min_of_day",
-        "time_of_day", "tod_sin", "tod_cos",
+        # Datum (linear) – reduziert um day, quarter, weekofyear, is_free_day
+        "dayofweek", "month",
+        "is_weekend", "is_holiday", "is_school_break",
+        # Tageszeit – reduziert um sched_dep_minute, time_of_day (kategorisch)
+        "sched_dep_hour", "sched_dep_min_of_day", "tod_sin", "tod_cos",
         # Strecke
         "sched_elapsed_min",
-        # Frequency-Encoding
-        "flight_combo_freq", "dest_freq",
-        # Aggregate aus Arrivals (1-Tag)
-        "origin_daily_arrival_delay_mean", "origin_daily_arrival_n",
-        # Aggregate aus Arrivals (7-Tage-Rolling)
-        "origin_7d_arrival_delay_mean", "origin_7d_arrival_n",
+        # Frequency-Encoding – reduziert um flight_combo_freq
+        "dest_freq",
+        # Aggregate aus Arrivals (1-Tag) – nur mean, ohne n
+        "origin_daily_arrival_delay_mean",
+        # Aggregate aus Arrivals (7-Tage-Rolling) – nur mean, ohne n
+        "origin_7d_arrival_delay_mean",
         # Aggregate aus Cancellation
         "cancellations_on_day",
+        # Wetter (NEU, aus 04_weather_join.py)
+        "temp_c", "wind_kts", "precip_1h_mm", "pressure_hpa",
+        # Arrival-by-Destination (NEU)
+        "dest_3d_arrival_delay_mean",
+        # Congestion-Window (NEU)
+        "is_congestion_window",
     ]
     metadata_cols = [
         "carrier_code", "date", "flight_number", "dest_airport",

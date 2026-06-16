@@ -1,0 +1,18 @@
+{
+  "model": "logreg_baseline",
+  "pr_auc": 0.2762177849109583,
+  "roc_auc": 0.6811483582709035,
+  "brier_score": 0.21479574012820624,
+  "f1_at_0.5": 0.3204945316214931,
+  "precision_at_0.5": 0.2185473411154345,
+  "recall_at_0.5": 0.6007130124777184,
+  "n_train": 35158,
+  "n_val": 12059,
+  "pos_rate_train": 0.16266568064167472,
+  "pos_rate_val": 0.1395638112612986,
+  "optimal_threshold": 0.5986968584671939,
+  "f1_at_optimal": 0.3364485980819629,
+  "precision_at_optimal": 0.29261862917398945,
+  "recall_at_optimal": 0.39572192513368987,
+  "threshold_strategy": "Bester F1 (Modell kann prec>=0.7 nicht sinnvoll erreichen)"
+}

@@ -1,0 +1,17 @@
+{
+  "model": "random_forest",
+  "pr_auc": 0.3014678535870764,
+  "roc_auc": 0.6905846986349504,
+  "brier_score": 0.18203220060412104,
+  "f1_at_0.5": 0.35138171197483714,
+  "precision_at_0.5": 0.282514450867052,
+  "recall_at_0.5": 0.46464646464646464,
+  "oob_score": 0.73900676944081,
+  "n_train": 35158,
+  "n_val": 12059,
+  "optimal_threshold": 0.5115309406336128,
+  "f1_at_optimal": 0.3529131985251177,
+  "precision_at_optimal": 0.2942109436954798,
+  "recall_at_optimal": 0.44087938205585264,
+  "threshold_strategy": "Bester F1 (Modell kann prec>=0.7 nicht sinnvoll erreichen)"
+}

@@ -1,0 +1,39 @@
+{
+  "model": "xgboost",
+  "best_config": "shallow",
+  "pr_auc": 0.31473296814462537,
+  "roc_auc": 0.6938127304612179,
+  "brier_score": 0.1913548707962036,
+  "f1_at_0.5": 0.35003117854915816,
+  "precision_at_0.5": 0.26918158567774936,
+  "recall_at_0.5": 0.5002970885323826,
+  "all_configs": [
+    {
+      "name": "shallow",
+      "pr_auc": 0.31473296814462537,
+      "best_iter": 52
+    },
+    {
+      "name": "medium",
+      "pr_auc": 0.3113106180224701,
+      "best_iter": 46
+    },
+    {
+      "name": "deep",
+      "pr_auc": 0.28621785209678907,
+      "best_iter": 117
+    },
+    {
+      "name": "fast_lr",
+      "pr_auc": 0.3066795900993775,
+      "best_iter": 13
+    }
+  ],
+  "n_train": 35158,
+  "n_val": 12059,
+  "optimal_threshold": 0.5374970436096191,
+  "f1_at_optimal": 0.3563880883283973,
+  "precision_at_optimal": 0.29907295445384924,
+  "recall_at_optimal": 0.44087938205585264,
+  "threshold_strategy": "Bester F1 (Modell kann prec>=0.7 nicht sinnvoll erreichen)"
+}
