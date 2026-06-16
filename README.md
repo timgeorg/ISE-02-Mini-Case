@@ -87,18 +87,28 @@ pip install -r requirements.txt
 
 ## Modell-Ergebnisse (Phase 4+5)
 
+### Baseline (20260616_090104) – 27 Features, kein Wetter, 2026-Q1/Q2 Val
+
 | Modell | PR-AUC | ROC-AUC | F1 (optimal) | Brier | Precision (opt) | Recall (opt) |
 |---|---:|---:|---:|---:|---:|---:|
 | LogReg Baseline | 0.276 | 0.681 | 0.336 | 0.215 | 0.293 | 0.396 |
-| Random Forest    | 0.301 | 0.691 | 0.353 | **0.182** | 0.294 | 0.441 |
+| Random Forest    | 0.301 | 0.691 | 0.353 | 0.182 | 0.294 | 0.441 |
 | **XGBoost**      | **0.315** | **0.694** | **0.356** | 0.191 | **0.299** | **0.441** |
 
-**Empfehlung: XGBoost** (PR-AUC = 0.315, 2.2x Lift über Baseline 0.14).
+### Nach Wetter + Reduktion (20260616_100444) – 24 Features, mit Wetter, 2025-Q3 Val
 
-Kein Modell erreicht Precision ≥ 0.7 mit sinnvollem Recall – das ist eine **strukturelle Eigenschaft** der Aufgabe (seltene, schwer vorhersagbare Events). Wichtigste Features:
+| Modell | PR-AUC | ROC-AUC | F1 (optimal) | Brier | Precision (opt) | Recall (opt) |
+|---|---:|---:|---:|---:|---:|---:|
+| **XGBoost**      | **0.485** | **0.771** | **0.517** | **0.142** | **0.449** | **0.609** |
+
+**Verbesserung: PR-AUC +0.17, Precision +0.15, Recall +0.17.**
+
+Wichtigste Features (neue Auswahl):
 1. `origin_daily_arrival_delay_mean` (verspätete Vorgänger-Ankunft)
 2. `cancellations_on_day` (Carrier-Probleme am Tag)
-3. `tod_sin` / `sched_dep_min_of_day` (Tageszeit)
+3. `wind_kts` (NEU – Wetter)
+4. `temp_c` (NEU – Wetter)
+5. `tod_sin` (Tageszeit)
 
 ## Skripte
 

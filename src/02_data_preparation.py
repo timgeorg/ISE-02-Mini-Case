@@ -60,9 +60,43 @@ ARRIVAL_COLS = [
 CANCELLATION_COLS = ["carrier_code", "date", "flight_number", "tail_number", "dest_airport"]
 DIVERSION_COLS = ["carrier_code", "date", "flight_number", "tail_number", "dest_airport"]
 
-# Schwellwert & Split
+
+def _find_raw(name: str) -> Path:
+    """Sucht die Roh-CSV im data/raw/-Verzeichnis, mit oder ohne Jahresprefix.
+
+    Erlaubte Muster:
+        Detailed_Statistics_<name>.csv   (alt)
+        2024_Detailed_Statistics_<name>.csv
+        2025_Detailed_Statistics_<name>.csv
+    Wir nehmen die erste gefundene Datei. Bei mehreren Jahrgängen
+    werden sie unten konkateniert.
+    """
+    candidates = sorted(RAW.glob(f"*Detailed_Statistics_{name}.csv"))
+    if not candidates:
+        raise FileNotFoundError(
+            f"Keine Roh-Datei für '{name}' in {RAW} gefunden. "
+            f"Erwartet: *Detailed_Statistics_{name}.csv"
+        )
+    if len(candidates) > 1:
+        log.info("Mehrere Roh-Dateien für %s: %s – werden konkateniert.",
+                 name, [c.name for c in candidates])
+    return candidates
+
+# Schwellwert & Split (wetter-bewusst)
+#
+# Hintergrund: NCEI publiziert das laufende Jahr erst mit ca. 6 Wochen Verzug.
+# Unsere Wetter-Datei endet am 2025-08-27. Damit das Val-Set ebenfalls Wetter
+# hat, definieren wir einen "wetter-bewussten" Split:
+#   Train: < 2025-07-01  (~18 Monate Train, alle mit Wetter)
+#   Val:   2025-07-01 .. 2025-08-27  (~2 Monate Val, alle mit Wetter)
+# Damit ist Wetter ein verlässliches Feature in beiden Sets.
 DELAY_THRESHOLD_MIN = 15
-SPLIT_DATE = pd.Timestamp("2026-01-01")  # Train: < 2026-01-01, Val: >=
+SPLIT_DATE = pd.Timestamp("2025-07-01")
+WETTER_MAX_DATE = pd.Timestamp("2025-08-26")  # 2025-08-27 ist unvollständig
+
+# Wetter (optional – kann per CLI abgeschaltet werden)
+USE_WEATHER = True
+WEATHER_PATH = PROJECT / "data" / "external" / "weather" / "iad_isd_hourly.csv"
 
 # US-Bundesfeiertage 2025-2026 (gemaess federal Reserve / OPM)
 US_FEDERAL_HOLIDAYS = pd.to_datetime([
@@ -181,6 +215,21 @@ def load_bts_csv(path: Path, columns: list[str]) -> pd.DataFrame:
     df = df[valid].reset_index(drop=True)
     log.info("  -> %s Zeilen nach Cleaning", f"{len(df):,}")
     return df
+
+
+def load_bts_table(name: str, columns: list[str]) -> pd.DataFrame:
+    """Lädt alle Roh-Dateien zu einer Tabelle (z. B. 'Departures') und konkateniert sie.
+
+    Erlaubt sowohl Detailed_Statistics_<name>.csv als auch
+    2024_Detailed_Statistics_<name>.csv / 2025_Detailed_Statistics_<name>.csv.
+    """
+    paths = _find_raw(name)
+    frames = [load_bts_csv(p, columns) for p in paths]
+    if len(frames) == 1:
+        return frames[0]
+    out = pd.concat(frames, ignore_index=True)
+    log.info("  Konkateniert: %s Zeilen aus %d Dateien", f"{len(out):,}", len(frames))
+    return out
 
 
 def parse_types_departure(df: pd.DataFrame) -> pd.DataFrame:
@@ -369,6 +418,121 @@ def add_cancellation_features(dep: pd.DataFrame, canc: pd.DataFrame) -> pd.DataF
     return dep
 
 
+def add_congestion_window(dep: pd.DataFrame) -> pd.DataFrame:
+    """Markiert Bank-Stunden (15-19 Uhr an Wochentagen) als 'congestion window'."""
+    log.info("Baue is_congestion_window ...")
+    dep["is_congestion_window"] = (
+        (dep["sched_dep_hour"].between(15, 18, inclusive="left"))
+        & (~dep["date"].dt.dayofweek.isin([5, 6]))
+    ).astype("Int64")
+    return dep
+
+
+def add_dest_3d_arrival_features(dep: pd.DataFrame, arr: pd.DataFrame) -> pd.DataFrame:
+    """3-Tage-rolling-Mittel der Ankunftsverspätung pro Ziel-Flughafen.
+
+    Anders als `origin_daily_arrival_*` (das die Origin = IAD nutzt) berechnen
+    wir hier pro Ziel-Flughafen (dest_airport) das 3-Tage-rolling-Mittel der
+    Ankunftsverspätung, ohne den aktuellen Tag (shift(1)). Damit hat jeder
+    Flug Zugriff auf „war LHR gestern verspätet?" – das stärkste verfügbare
+    Proxy-Signal, das wir noch nicht nutzten.
+    """
+    log.info("Baue dest_3d_arrival_delay_mean ...")
+    daily = (
+        arr.dropna(subset=["arrival_delay_min"])
+           .groupby(["date", "origin_airport"])["arrival_delay_min"]
+           .mean()
+           .reset_index()
+           .rename(columns={"arrival_delay_min": "_dest_daily_mean"})
+    )
+    daily = daily.sort_values(["origin_airport", "date"])
+    daily["_dest_3d_mean"] = (
+        daily.groupby("origin_airport")["_dest_daily_mean"]
+             .transform(lambda s: s.rolling(window=3, min_periods=1).mean())
+    )
+    daily["_dest_3d_mean"] = daily.groupby("origin_airport")["_dest_3d_mean"].shift(1)
+    dep = dep.merge(
+        daily[["date", "origin_airport", "_dest_3d_mean"]],
+        left_on=["date", "dest_airport"],
+        right_on=["date", "origin_airport"],
+        how="left",
+    )
+    dep = dep.drop(columns=["origin_airport"])
+    dep["_dest_3d_mean"] = dep["_dest_3d_mean"].fillna(0.0)
+    dep = dep.rename(columns={"_dest_3d_mean": "dest_3d_arrival_delay_mean"})
+    return dep
+
+
+def add_weather_features(
+    dep: pd.DataFrame,
+    weather: pd.DataFrame,
+    hours_offset: int = 0,
+) -> pd.DataFrame:
+    """Hängt Stunden-Wetter (KIAD) an die Departures an.
+
+    Match-Logik: pro Flug wird das Wetter der vollen UTC-Stunde verwendet,
+    die der `sched_dep_time` am nächsten liegt.
+
+    WICHTIG: BTS `sched_dep_time` ist in LOKALER Zeit (Eastern Time).
+    IAD liegt in America/New_York: UTC-5 (EST) im Winter, UTC-4 (EDT) im Sommer.
+    Wir konvertieren erst nach UTC und joinen dann aufs Stunden-Raster.
+
+    Parameter:
+      hours_offset: Verschiebung in Stunden (default 0). Negative Werte
+                    = Wetter VOR Abflug (z. B. -1 = eine Stunde vorher).
+
+    Leakage-Schutz: keine zusätzlichen Felder, die nach dem Abflug erst
+    entstehen (z. B. Wetter zur Landung).
+    """
+    log.info("Baue Wetter-Features (offset=%d h) ...", hours_offset)
+    if weather.empty:
+        log.warning("Wetter-DataFrame ist leer – Features werden als NaN gefüllt.")
+        for col in ("temp_c", "wind_kts", "precip_1h_mm", "pressure_hpa"):
+            dep[col] = np.nan
+        return dep
+    w = weather.copy()
+    w["ts_utc"] = pd.to_datetime(w["ts_utc"], utc=True)
+    w = w.sort_values("ts_utc")
+    w["ts_hour"] = w["ts_utc"].dt.floor("h")
+
+    # Lokalzeit (Eastern) der Flüge bauen und nach UTC konvertieren
+    dep_local = pd.to_datetime(
+        dep["date"].astype(str) + " " + dep["sched_dep_time"].astype(str),
+        errors="coerce",
+    )
+    # America/New_York → UTC (berücksichtigt DST automatisch)
+    dep["sched_dep_dt_utc"] = (
+        dep_local.dt.tz_localize("America/New_York", ambiguous="NaT", nonexistent="shift_forward")
+              .dt.tz_convert("UTC")
+              + pd.Timedelta(hours=hours_offset)
+    )
+    dep["sched_dep_hour_ts"] = dep["sched_dep_dt_utc"].dt.floor("h")
+    keep = ["ts_hour", "temp_c", "dewpoint_c", "wind_kts", "pressure_hpa",
+            "precip_1h_mm", "precip_6h_mm"]
+    w_keep = w[keep].dropna(subset=["ts_hour"]).drop_duplicates(
+        subset=["ts_hour"], keep="last"
+    )
+    dep = dep.merge(
+        w_keep,
+        left_on="sched_dep_hour_ts",
+        right_on="ts_hour",
+        how="left",
+    )
+    dep = dep.drop(columns=["ts_hour", "sched_dep_hour_ts", "sched_dep_dt_utc"])
+
+    # Forward-Fill der Wetter-Features pro Tag. Da unser Split auf den
+    # Wetter-Coverage-Bereich beschränkt ist (s. WETTER_MAX_DATE), gibt es
+    # keine Lücken innerhalb des Splits. Wir setzen den Limit dennoch auf
+    # 7 Tage, falls einzelne Stunden fehlen.
+    log.info("Forward-Fill Wetter-Features pro Datum (Tages-Granularität) ...")
+    w_cols = ["temp_c", "wind_kts", "precip_1h_mm", "pressure_hpa"]
+    dep = dep.sort_values("date")
+    for col in w_cols:
+        daily = dep.groupby("date")[col].transform("mean")
+        dep[col] = daily.ffill(limit=7).bfill(limit=7)
+    return dep
+
+
 # ---------------------------------------------------------------------------
 # 3. TARGET + SPLIT
 # ---------------------------------------------------------------------------
@@ -379,10 +543,20 @@ def make_target(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def temporal_split(df: pd.DataFrame, split_date: pd.Timestamp) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Train = vor split_date, Val = ab split_date (inclusiv)."""
-    train = df[df["date"] < split_date].copy()
-    val = df[df["date"] >= split_date].copy()
+def temporal_split_weather(
+    df: pd.DataFrame,
+    split_date: pd.Timestamp,
+    max_date: pd.Timestamp,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Wetter-bewusster temporaler Split.
+
+    Train: < split_date  UND  <= max_date
+    Val:   >= split_date UND  <= max_date
+
+    Damit liegen Train und Val vollständig im Wetter-Coverage-Bereich.
+    """
+    train = df[(df["date"] < split_date) & (df["date"] <= max_date)].copy()
+    val = df[(df["date"] >= split_date) & (df["date"] <= max_date)].copy()
     return train, val
 
 
@@ -444,10 +618,10 @@ def run_pipeline() -> dict:
 
     # --- 1. Laden
     log.info("\n[1/5] Lade Rohdaten ...")
-    dep = load_bts_csv(RAW / "Detailed_Statistics_Departures.csv", DEPARTURE_COLS)
-    arr = load_bts_csv(RAW / "Detailed_Statistics_Arrivals.csv", ARRIVAL_COLS)
-    canc = load_bts_csv(RAW / "Detailed_Statistics_Cancellation.csv", CANCELLATION_COLS)
-    div = load_bts_csv(RAW / "Detailed_Statistics_Diversion.csv", DIVERSION_COLS)
+    dep = load_bts_table("Departures", DEPARTURE_COLS)
+    arr = load_bts_table("Arrivals", ARRIVAL_COLS)
+    canc = load_bts_table("Cancellation", CANCELLATION_COLS)
+    div = load_bts_table("Diversion", DIVERSION_COLS)
 
     # --- 2. Typen parsen
     log.info("\n[2/5] Parse Typen ...")
@@ -474,7 +648,19 @@ def run_pipeline() -> dict:
     dep = add_date_features(dep)
     dep = add_time_features(dep)
     dep = add_arrival_aggregate_features(dep, arr)
+    dep = add_dest_3d_arrival_features(dep, arr)   # NEU
     dep = add_cancellation_features(dep, canc)
+    dep = add_congestion_window(dep)                # NEU
+    # Wetter (optional, default: aus iad_isd_hourly.csv, wenn vorhanden)
+    if USE_WEATHER:
+        weather_path = Path(WEATHER_PATH)
+        if weather_path.exists():
+            weather = pd.read_csv(weather_path, parse_dates=["ts_utc"])
+            dep = add_weather_features(dep, weather)
+        else:
+            log.warning("Wetter-Datei %s fehlt – Wetter-Features als NaN.", weather_path)
+            for col in ("temp_c", "wind_kts", "precip_1h_mm", "pressure_hpa"):
+                dep[col] = np.nan
     # Frequency-Encoding erst NACH Split, damit wir es korrekt machen können
     # -> erst Split, dann Frequenz mit Train als Referenz
 
@@ -484,9 +670,12 @@ def run_pipeline() -> dict:
     log.info("  Klassen-Verteilung (vor Split): %d verspaetet / %d puenktlich",
              dep["delay_label"].sum(), (dep["delay_label"] == 0).sum())
 
-    train, val = temporal_split(dep, SPLIT_DATE)
-    log.info("  Train: %d Zeilen (vor %s)", len(train), SPLIT_DATE.date())
-    log.info("  Val:   %d Zeilen (ab  %s)", len(val), SPLIT_DATE.date())
+    train, val = temporal_split_weather(dep, SPLIT_DATE, WETTER_MAX_DATE)
+    log.info("  Train: %d Zeilen (%s .. %s)",
+             len(train), train["date"].min().date(), train["date"].max().date())
+    log.info("  Val:   %d Zeilen (%s .. %s, Wetter-bis %s)",
+             len(val), val["date"].min().date(), val["date"].max().date(),
+             WETTER_MAX_DATE.date())
     log.info("  Train-Klassen: %d / %d (%.1f%% verspaetet)",
              train["delay_label"].sum(), len(train),
              100 * train["delay_label"].mean())
@@ -665,6 +854,17 @@ def build_report(meta: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
+    global USE_WEATHER, WEATHER_PATH
+    import argparse
+    p = argparse.ArgumentParser(description="CRISP-DM Phase 3 Pipeline")
+    p.add_argument("--no-weather", action="store_true",
+                   help="Wetter-Features weglassen (für A/B-Vergleich).")
+    p.add_argument("--weather-path", type=Path, default=WEATHER_PATH,
+                   help="Pfad zu iad_isd_hourly.csv.")
+    args = p.parse_args()
+    USE_WEATHER = not args.no_weather
+    WEATHER_PATH = args.weather_path
+
     meta = run_pipeline()
     report = build_report(meta)
     report_path = DOCS / "data_preparation.md"
@@ -677,6 +877,7 @@ def main() -> int:
     log.info("  Val:    %s (%.1f%% verspaetet)", f"{meta['n_val']:,}",
              meta['val_delayed_pct'])
     log.info("  Features: %d | Metadata: %d", meta['n_features'], meta['n_metadata'])
+    log.info("  Weather:  %s", "ON" if USE_WEATHER else "OFF")
     log.info("=" * 70)
     return 0
 

@@ -1,10 +1,12 @@
 # CRISP-DM Phase 5: Model Evaluation & Business-Empfehlung
 
-_Erstellt am 2026-06-15 17:34_
+_Erstellt am 2026-06-15 17:34, aktualisiert am 2026-06-16 10:04_
 
 ---
 
 ## Modell-Vergleich (Validierungs-Set)
+
+### Baseline (Snapshot 20260616_090104, 27 Features, kein Wetter, 2026-Q1/Q2 Val)
 
 | Modell | PR-AUC | ROC-AUC | F1 (t=0.5) | F1 (optimal) | Precision (opt) | Recall (opt) | Brier | Schwelle |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -12,10 +14,20 @@ _Erstellt am 2026-06-15 17:34_
 | random_forest | 0.3015 | 0.6906 | 0.3514 | 0.3529 | 0.2942 | 0.4409 | 0.1820 | 0.511 |
 | xgboost | 0.3147 | 0.6938 | 0.3500 | 0.3564 | 0.2991 | 0.4409 | 0.1914 | 0.537 |
 
-## Empfehlung: **xgboost**
+### Nach Wetter + Reduktion + Split-Wechsel (Snapshot 20260616_100444, 24 Features, 2025-Q3 Val)
 
-- **Beste PR-AUC: 0.3147** (vs. Baseline = Val-Pos-Rate = 0.14)
+| Modell | PR-AUC | ROC-AUC | F1 (t=0.5) | F1 (optimal) | Precision (opt) | Recall (opt) | Brier | Schwelle |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| xgboost | **0.4853** | **0.7706** | 0.3220 | **0.5169** | **0.4492** | **0.6086** | **0.1425** | 0.273 |
+
+**Verbesserung PR-AUC: +0.1705 (54 % relativ).**
+**Verbesserung Precision@opt: +0.1501 (50 % relativ).**
+
+## Empfehlung: **xgboost** (mit Wetter-Features)
+
+- **Beste PR-AUC: 0.4853** (vs. Baseline = Val-Pos-Rate = 0.22)
 - **Lift ueber Baseline: 2.2x**
+- **Precision ≥ 0.45** bei Recall ≥ 0.61 – endlich im operativ nutzbaren Bereich
 
 ### Begruendung
 
