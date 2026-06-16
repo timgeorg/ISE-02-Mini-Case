@@ -29,3 +29,39 @@ _Erstellt am 2026-06-15 17:34_
 2. CLI-Wrapper fuer manuelle Predictions
 3. Evtl. REST-API (FastAPI) fuer Realtime-Predictions
 4. Monitoring: Drift-Detection fuer Feature-Distribution
+
+---
+
+## Addendum 2026-06-16 (Vergleichsplan mit neuem Feature-Set)
+
+### Geplante Vergleichs-Setups
+
+| Setup | Beschreibung | Zweck |
+|---|---|---|
+| **A. Baseline** | Aktuelles Modell (27 Features, ohne Wetter) | Referenz (entspricht Snapshot `20260616_090104`) |
+| **B. Reduzierte Features** | 19 Features (8 Reduktionen, ohne Wetter) | Misst, ob die Reduktion hilft oder schadet |
+| **C. Reduziert + Wetter** | 23 Features (Wetter 4 hinzu) | Misst reinen Wetter-Hebel |
+| **D. Reduziert + Wetter + Arrival-by-Dest** | 24 Features | Misst zusätzlichen Arrival-by-Dest-Hebel |
+| **E. Voll + Congestion-Window** | 25 Features | Vollständig |
+
+### Erwartete Effekte (informelle Schätzung)
+
+| Setup vs. A | Erwartete Δ PR-AUC |
+|---|---:|
+| B (Reduktion) | ±0.000 (kaum Effekt) |
+| C (+ Wetter) | +0.010 bis +0.030 |
+| D (+ Arrival-by-Dest) | +0.005 bis +0.015 |
+| E (Voll) | +0.015 bis +0.045 kombiniert |
+
+### Diskussions-Stand
+
+- **Mehr Daten oder mehr Feature Engineering?** Diskussion 2026-06-16: Mehr Daten ist im BTS-Universum limitiert (nur UA am IAD), aber Wetter ist neuartig und sollte den größten Sprung bringen.
+- **Strukturelle Grenze?** Aktuelle PR-AUC = 0.31 bei 14 % Pos-Rate. Das ist 2.2× Lift. Eine Precision ≥ 0.7 bei Recall ≥ 0.25 ist erreichbar mit dem neuen Feature-Set, aber nicht garantiert.
+
+### Snapshot-Status
+
+- Baseline-Snapshot: `results/snapshots/20260616_090104/` (eingefroren 2026-06-16 09:01)
+- Wetter-Rohdaten: `data/external/weather/` (14 497 Stunden)
+- Nach Re-Run: neuer Snapshot mit Post-Wetter-Metriken.
+
+Ausführliche Diskussion: siehe `docs/session_2026-06-16.md`.

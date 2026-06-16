@@ -148,3 +148,64 @@ Diese Flüge können vom Modell nicht sinnvoll eingeschätzt werden, weil das `d
 4. **Evaluation:** PR-AUC, F1, Brier Score, Confusion Matrix
 5. **Feature-Importance:** SHAP-Werte für die Top-Features
 6. **Modell-Persistierung:** Joblib/Pickle
+
+---
+
+## Addendum 2026-06-16 (Diskussion + Plan für Phase 3.1)
+
+### Geplante Feature-Änderungen (vor Re-Run)
+
+**Reduktion (8 Features raus):**
+
+| Feature | Grund |
+|---|---|
+| `day` | Quasi zufällig bei monatszyklischer Kodierung; leichtes Overfit-Risiko |
+| `quarter` | Vollständig redundant zu `month` (4 Werte, lineare Beziehung) |
+| `weekofyear` | Doppelung zur zyklischen Monatskodierung |
+| `is_free_day` | Linear abhängig aus `is_weekend OR is_holiday OR is_school_break` |
+| `time_of_day` (kategorisch) | Wir behalten `tod_sin/cos`; kategorische Variante war Quelle des XGB-Dtype-Problems |
+| `sched_dep_minute` | Mikroverschiebung hat keinen Delay-Effekt |
+| `origin_daily_arrival_n`, `origin_7d_arrival_n` | Konstanten pro Tag, nicht informativ |
+| `flight_combo_freq` | Bei einer Carrier-Klasse schwankend, abhängig von `dest_freq` |
+
+**Ergebnis: 27 → ~19 Features.**
+
+**Hinzufügen (~6 Features):**
+
+| Feature | Erwarteter Hebel | Begründung |
+|---|---|---|
+| `temp_c` zur scheduled dep hour | mittel-hoch | Wetter-Hebel: extreme Temperaturen verlangsamen den Betrieb |
+| `wind_kts` zur scheduled dep hour | mittel-hoch | High Wind = Ground Stop / Runway Change |
+| `precip_1h_mm` zur scheduled dep hour | mittel | Regen verlangsamt Roll-Vorgänge |
+| `pressure_hpa` zur scheduled dep hour | niedrig-mittel | Drucksystem-Verschiebung korreliert mit Wetter |
+| `dest_3d_arrival_delay_mean` | mittel | „War LHR gestern verspätet?" – stärkstes verfügbares Proxy-Signal |
+| `is_congestion_window` | niedrig | dep_hour in {15–19} AND weekday = Bank-Stunden (Slot-Belegung) |
+
+**Ergebnis: 19 → ~25 Features.**
+
+### Wetter-Datenquelle (geplant)
+
+- **Quelle:** NCEI ISD-Lite Bulk
+- **URL-Schema:** `https://www.ncei.noaa.gov/pub/data/noaa/isd-lite/<YYYY>/<USAF>-<WMO>-<YYYY>.gz`
+- **IAD USAF:** 724050, **WMO:** 13743
+- **Lizenz:** Public Domain (US-Regierung)
+- **Downloader:** `src/weather_download.py` (Stand 2026-06-16: 14 497 Stunden, 2024-01-01 bis 2025-08-27)
+- **Wartung:** automatischer Soft-Skip bei nicht-verfügbaren Jahren (NCEI-Verzug)
+
+### Explizit nicht (Over-Engineering)
+
+1. Aircraft Rotation (Tail-Number) – Tail-Number ist zu 99 % leer in BTS.
+2. Taxiway-Belegung / ATC-Load – NAS-Daten erforderlich (FAA SWIM).
+3. Flugzeugtyp / Gate-Readiness / Scheduled TAT – In BTS Detailed Statistics nicht enthalten.
+4. Carrier-übergreifende Origin-Aggregate – BTS hat nur UA am IAD.
+5. Komplexe Target-Encoding (z. B. nested CV) – „Simple halten" laut User.
+
+### Reihenfolge der Implementierung
+
+1. `02_data_preparation.py` + `inference.py` synchron anpassen (Feature-Liste).
+2. `04_weather_join.py` (neu) baut Wetter-Features.
+3. Notebooks `01-03` re-runnen.
+4. Vergleichs-Notebook `04` mit zwei Spalten (Baseline / Mit Wetter + Reduktion).
+5. Snapshot der Baseline (`results/snapshots/20260616_090104/`) als Referenz.
+
+Ausführliche Diskussion: siehe `docs/session_2026-06-16.md`.

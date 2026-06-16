@@ -25,6 +25,8 @@ ISE-02-Mini-Case/
 │   │   ├── Detailed_Statistics_Arrivals.csv      (4.9 MB, 47.212 Flüge)
 │   │   ├── Detailed_Statistics_Cancellation.csv  (12.5 KB, 356 Events)
 │   │   └── Detailed_Statistics_Diversion.csv     (5.3 KB, 121 Events)
+│   ├── external/               # Exogene Daten (z. B. Wetter, ab Phase 6)
+│   │   └── weather/            # NCEI ISD Hourly (siehe src/weather_download.py)
 │   └── processed/              # Aufbereitete Daten (Phase 3)
 ├── docs/
 │   ├── Aufgabenstellung.md
@@ -42,6 +44,7 @@ ISE-02-Mini-Case/
 ├── src/                        # Daten-Pipeline
 │   ├── 01_business_data_understanding.py
 │   ├── 02_data_preparation.py
+│   ├── 03_weather_download.py  # NCEI ISD Hourly (Phase 6, optional)
 │   ├── _sanity_check.py
 │   └── inference.py            # CLI/API-Inference (Phase 6)
 ├── examples_flights.csv        # Demo-Batch für Inference
@@ -141,6 +144,45 @@ Output:
 2. **REST-API** (FastAPI) für Realtime-Predictions
 3. **Model Monitoring**: Drift-Detection für Feature-Distribution
 4. **Re-Training-Pipeline**: monatliches Retraining mit neuen BTS-Daten
+5. **Wetter integrieren** (Phase 6) → `src/weather_download.py` ✓ (Download bereit, Re-Training offen)
+
+### Snapshot Baseline-Stand
+
+Vor der Wetter-Integration wurde der Modell-Stand eingefroren unter
+`results/snapshots/20260616_090104/` (alle Metriken + Plots). So lässt sich
+später exakt vergleichen, was die Wetter-Features an zusätzlichem Lift bringen.
+
+### Wetter-Download (`src/weather_download.py`)
+
+Bezieht stündliche Wetterdaten für IAD (USAF `724050`, WMO `13743`) aus
+**NCEI ISD-Lite** (Public Domain, ~0.5–1 MB/Jahr als .gz).
+
+```powershell
+# Standard: 2024..aktuelles Jahr
+python -m src.weather_download
+
+# Zeitraum explizit
+python -m src.weather_download --start-year 2024 --end-year 2026
+```
+
+Output:
+- `data/external/weather/raw/isd_lite_KIAD_<YYYY>.csv` (Roh, resumefähig)
+- `data/external/weather/iad_isd_hourly.csv` (vereinheitlicht; Spalten: `station,
+  ts_utc, temp_c, dewpoint_c, wind_kts, wind_dir, pressure_hpa, precip_mm,
+  cloud_cover_flag`)
+
+Hinweise:
+- ISD-Lite ist Public Domain, kein API-Key nötig.
+- NCEI publiziert laufendes Jahr mit ~2–6 Wochen Verzögerung; das Skript
+  überspringt nicht verfügbare Jahre automatisch.
+- Für **Live-Vorhersage** (Inferenz) nicht dieses Skript nutzen, sondern
+  Open-Meteo / NWS (siehe `docs/inference.md`).
+
+Nächste Schritte nach dem Download:
+1. **Join-Skript** (`src/04_weather_join.py`) baut pro Flug das passende Stundenwetter
+   zur scheduled departure time.
+2. Re-Training der Notebooks mit den zusätzlichen Wetter-Features.
+3. `feature_metadata.json` + Lookup-Tabellen im `inference.py` erweitern.
 
 ### Inference-Skript (`src/inference.py`)
 
