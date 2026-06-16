@@ -1,6 +1,6 @@
 # CRISP-DM Phase 3: Data Preparation
 
-_Erstellt am 2026-06-16 10:10_
+_Erstellt am 2026-06-16 11:01_
 
 ---
 
@@ -72,11 +72,11 @@ Pro `(origin_airport, date)` wird der rolling-7-Tage-Mittel der `arrival_delay_m
 
 ## Temporal-Split
 
-- **Split-Datum:** 2025-07-01
-- **Train:** 49,609 Zeilen, 2024-01-01 -> 2025-06-30
-- **Val:**   5,494 Zeilen, 2025-07-01 -> 2025-08-26
-- **Train Klassen-Balance:** 15.88 % verspätet
-- **Val Klassen-Balance:**   21.95 % verspätet
+- **Split-Datum:** 2025-01-01
+- **Train:** 32,248 Zeilen, 2024-01-01 -> 2024-12-31
+- **Val:**   22,855 Zeilen, 2025-01-01 -> 2025-08-26
+- **Train Klassen-Balance:** 15.45 % verspätet
+- **Val Klassen-Balance:**   17.95 % verspätet
 
 > **Anmerkung zur Saisonalität:** Val enthält nur Jan-Apr, also Winter + früher Frühling. Sommerverspätungen (Gewitter) und Thanksgiving/Christmas-Spitzen sind nicht in Val enthalten. Wird in Phase 5 (Evaluation) thematisiert.
 

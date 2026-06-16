@@ -43,5 +43,6 @@ desktop.ini
 
 # Daten & Logs (nicht einchecken)
 logs/
+models/
 *.zip
 *.parquet

@@ -1,6 +1,6 @@
 {
   "n_features": 24,
-  "n_metadata": 7,
+  "n_metadata": 9,
   "feature_columns": [
     "dow_sin",
     "dow_cos",
@@ -34,18 +34,20 @@
     "dest_airport",
     "sched_dep_time",
     "departure_delay_min",
-    "delay_label"
+    "delay_label",
+    "delay_label_15",
+    "delay_label_40"
   ],
   "delay_threshold_min": 15,
-  "split_date": "2025-07-01",
-  "n_train": 49609,
-  "n_val": 5494,
-  "train_delayed_pct": 15.880183031304803,
-  "val_delayed_pct": 21.951219512195124,
-  "n_unique_destinations": 61,
-  "n_unique_flight_numbers": 599,
+  "split_date": "2025-01-01",
+  "n_train": 32248,
+  "n_val": 22855,
+  "train_delayed_pct": 15.445919126767551,
+  "val_delayed_pct": 17.952308028877706,
+  "n_unique_destinations": 58,
+  "n_unique_flight_numbers": 410,
   "date_train_min": "2024-01-01",
-  "date_train_max": "2025-06-30",
-  "date_val_min": "2025-07-01",
+  "date_train_max": "2024-12-31",
+  "date_val_min": "2025-01-01",
   "date_val_max": "2025-08-26"
 }

@@ -1,0 +1,5 @@
+        Target  Thresh   Recall  Precision       F1
+delay_label_15     0.5 0.594443   0.349227 0.439975
+delay_label_15     0.2 0.981233   0.189995 0.318349
+delay_label_40     0.5 0.472087   0.280394 0.351824
+delay_label_40     0.2 0.949434   0.129855 0.228463

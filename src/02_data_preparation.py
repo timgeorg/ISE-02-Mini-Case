@@ -82,16 +82,9 @@ def _find_raw(name: str) -> Path:
                  name, [c.name for c in candidates])
     return candidates
 
-# Schwellwert & Split (wetter-bewusst)
-#
-# Hintergrund: NCEI publiziert das laufende Jahr erst mit ca. 6 Wochen Verzug.
-# Unsere Wetter-Datei endet am 2025-08-27. Damit das Val-Set ebenfalls Wetter
-# hat, definieren wir einen "wetter-bewussten" Split:
-#   Train: < 2025-07-01  (~18 Monate Train, alle mit Wetter)
-#   Val:   2025-07-01 .. 2025-08-27  (~2 Monate Val, alle mit Wetter)
-# Damit ist Wetter ein verlässliches Feature in beiden Sets.
+# Schwellwert & Split
 DELAY_THRESHOLD_MIN = 15
-SPLIT_DATE = pd.Timestamp("2025-07-01")
+SPLIT_DATE = pd.Timestamp("2025-01-01")  # Train: < 2025-01-01, Val: >=
 WETTER_MAX_DATE = pd.Timestamp("2025-08-26")  # 2025-08-27 ist unvollständig
 
 # Wetter (optional – kann per CLI abgeschaltet werden)
@@ -538,8 +531,13 @@ def add_weather_features(
 # ---------------------------------------------------------------------------
 
 def make_target(df: pd.DataFrame) -> pd.DataFrame:
-    """Binäre Target-Variable: 1 wenn Verspätung >= Threshold, sonst 0."""
-    df["delay_label"] = (df["departure_delay_min"] >= DELAY_THRESHOLD_MIN).astype("Int64")
+    """Binäre Target-Variablen: 1 wenn Verspätung >= Threshold, sonst 0.
+    Erzeugt Labels für 15min und 40min.
+    """
+    df["delay_label_15"] = (df["departure_delay_min"] >= 15).astype("Int64")
+    df["delay_label_40"] = (df["departure_delay_min"] >= 40).astype("Int64")
+    # Standard-Label für Abwärtskompatibilität
+    df["delay_label"] = df["delay_label_15"]
     return df
 
 
@@ -603,6 +601,7 @@ def select_feature_columns(df: pd.DataFrame) -> tuple[list[str], list[str]]:
     metadata_cols = [
         "carrier_code", "date", "flight_number", "dest_airport",
         "sched_dep_time", "departure_delay_min", "delay_label",
+        "delay_label_15", "delay_label_40",
     ]
     # Nur vorhandene Spalten zurückgeben
     feature_cols = [c for c in feature_cols if c in df.columns]
