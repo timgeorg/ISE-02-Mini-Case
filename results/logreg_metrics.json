@@ -10,8 +10,9 @@
   "n_val": 12059,
   "pos_rate_train": 0.16266568064167472,
   "pos_rate_val": 0.1395638112612986,
-  "optimal_threshold": 0.999981934832132,
-  "f1_at_optimal": 0.0023738872403560834,
-  "precision_at_optimal": 1.0,
-  "recall_at_optimal": 0.0011883541295306002
+  "optimal_threshold": 0.5986968584671939,
+  "f1_at_optimal": 0.3364485980819629,
+  "precision_at_optimal": 0.29261862917398945,
+  "recall_at_optimal": 0.39572192513368987,
+  "threshold_strategy": "Bester F1 (Modell kann prec>=0.7 nicht sinnvoll erreichen)"
 }

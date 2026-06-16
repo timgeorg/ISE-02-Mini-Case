@@ -1,0 +1,4 @@
+carrier_code,date,flight_number,dest_airport,sched_dep_time,sched_elapsed_min
+UA,2026-06-15,944,LHR,18:30,420
+UA,2026-06-15,123,LAX,08:00,330
+UA,2026-06-15,500,SFO,12:15,360

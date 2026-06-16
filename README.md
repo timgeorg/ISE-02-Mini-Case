@@ -28,10 +28,24 @@ ISE-02-Mini-Case/
 │   └── processed/              # Aufbereitete Daten (Phase 3)
 ├── docs/
 │   ├── Aufgabenstellung.md
-│   └── data_understanding.md   # Output von src/01_business_data_understanding.py
+│   ├── data_understanding.md   # CRISP-DM Phase 1+2
+│   ├── data_preparation.md     # CRISP-DM Phase 3
+│   └── model_evaluation.md     # CRISP-DM Phase 5
 ├── logs/                       # Skript-Logs
-├── src/
-│   └── 01_business_data_understanding.py
+├── models/                     # Trainierte Modelle (joblib)
+├── results/                    # Metriken + Plots
+├── notebooks/                  # Jupyter Notebooks (Phase 4+5)
+│   ├── 01_baseline_logreg.ipynb
+│   ├── 02_random_forest.ipynb
+│   ├── 03_xgboost.ipynb
+│   └── 04_compare_models.ipynb
+├── src/                        # Daten-Pipeline
+│   ├── 01_business_data_understanding.py
+│   ├── 02_data_preparation.py
+│   ├── _sanity_check.py
+│   └── inference.py            # CLI/API-Inference (Phase 6)
+├── examples_flights.csv        # Demo-Batch für Inference
+├── examples_predictions.csv    # Demo-Output (generiert)
 ├── .venv/                      # Virtuelle Umgebung (nicht in Git)
 ├── requirements.txt
 └── README.md
@@ -53,8 +67,8 @@ pip install -r requirements.txt
 | 1. Business Understanding | erledigt | `docs/data_understanding.md` Abschnitt 1 |
 | 2. Data Understanding | erledigt | `docs/data_understanding.md` Abschnitt 2 |
 | 3. Data Preparation | erledigt | `docs/data_preparation.md` + `data/processed/*.parquet` |
-| 4. Modeling | offen | – |
-| 5. Evaluation | offen | – |
+| 4. Modeling | erledigt | `notebooks/01-03*.ipynb` + `models/*.joblib` + `results/*.png` |
+| 5. Evaluation | erledigt | `notebooks/04_compare_models.ipynb` + `docs/model_evaluation.md` |
 | 6. Deployment | offen | – |
 
 ## Wichtigste Erkenntnisse aus Phase 1+2
@@ -67,6 +81,21 @@ pip install -r requirements.txt
 - **Vorgeschlagene Target-Variable**: `departure_delay_min >= 15`
 - **Vorgeschlagene Features**: Datum, sched_dep_time, dest_airport, sched_elapsed_min
 - **Carrier konstant** (nur UA) → vereinfacht die Modellierung
+
+## Modell-Ergebnisse (Phase 4+5)
+
+| Modell | PR-AUC | ROC-AUC | F1 (optimal) | Brier | Precision (opt) | Recall (opt) |
+|---|---:|---:|---:|---:|---:|---:|
+| LogReg Baseline | 0.276 | 0.681 | 0.336 | 0.215 | 0.293 | 0.396 |
+| Random Forest    | 0.301 | 0.691 | 0.353 | **0.182** | 0.294 | 0.441 |
+| **XGBoost**      | **0.315** | **0.694** | **0.356** | 0.191 | **0.299** | **0.441** |
+
+**Empfehlung: XGBoost** (PR-AUC = 0.315, 2.2x Lift über Baseline 0.14).
+
+Kein Modell erreicht Precision ≥ 0.7 mit sinnvollem Recall – das ist eine **strukturelle Eigenschaft** der Aufgabe (seltene, schwer vorhersagbare Events). Wichtigste Features:
+1. `origin_daily_arrival_delay_mean` (verspätete Vorgänger-Ankunft)
+2. `cancellations_on_day` (Carrier-Probleme am Tag)
+3. `tod_sin` / `sched_dep_min_of_day` (Tageszeit)
 
 ## Skripte
 
@@ -106,14 +135,52 @@ Output:
 4. **2025 = Training, 2026 = Validation** (temporal split, falls genug Daten).
 5. **Keine Airborne_Time-Tabelle** verfügbar — wird in der Modellierung nicht verwendet.
 
-## Nächste Schritte (Phase 3)
+## Nächste Schritte (Phase 6: Deployment)
 
-1. Saubere Pipeline: laden → bereinigen → Features ableiten → speichern als `data/processed/iad_flights.parquet`
-2. Feature-Engineering: Datums-Features, Strecken-Features, Holiday-Flags (US-Feiertage)
-3. Train/Validation-Split
-4. Baseline-Modell: Logistic Regression
-5. Iteration: Random Forest → XGBoost/LightGBM
-6. Modell-Evaluation mit PR-AUC, F1, Brier Score
+1. **CLI-Wrapper** für manuelle Predictions (Python-Skript) → `src/inference.py` ✓
+2. **REST-API** (FastAPI) für Realtime-Predictions
+3. **Model Monitoring**: Drift-Detection für Feature-Distribution
+4. **Re-Training-Pipeline**: monatliches Retraining mit neuen BTS-Daten
+
+### Inference-Skript (`src/inference.py`)
+
+Nimmt einen oder mehrere Flüge und liefert Verspätungs-Wahrscheinlichkeit + Label.
+Aktuell nutzt das Skript das trainierte **XGBoost**-Modell, kann aber auch
+LogReg/RF laden. Wetterdaten sind als Input-Feld vorbereitet, werden aber noch
+nicht als Feature genutzt (Backwards-Compat bis das nächste Training Wetter
+integriert).
+
+```powershell
+# Demo-Prediction
+python -m src.inference --demo
+
+# Einzelner Flug (JSON-String)
+python -m src.inference --flight-json '{"carrier_code":"UA","date":"2026-06-15","flight_number":"944","dest_airport":"LHR","sched_dep_time":"18:30","sched_elapsed_min":420}'
+
+# Einzelner Flug (JSON-Datei)
+python -m src.inference --flight-json tmp_flight.json
+
+# Batch (CSV → CSV)
+python -m src.inference --flight-csv examples_flights.csv --output-csv examples_predictions.csv
+
+# Andere Modelle / Threshold
+python -m src.inference --model models/random_forest.joblib --threshold 0.3 --flight-json tmp_flight.json
+```
+
+Programmatisch:
+
+```python
+from src.inference import FlightPredictor
+p = FlightPredictor()  # default: XGBoost, threshold 0.5
+print(p.predict_one({
+    "carrier_code": "UA",
+    "date": "2026-06-15",
+    "flight_number": "944",
+    "dest_airport": "LHR",
+    "sched_dep_time": "18:30",
+    "sched_elapsed_min": 420,
+}))
+```
 
 ## Verfügbare Daten (4 Tabellen)
 
