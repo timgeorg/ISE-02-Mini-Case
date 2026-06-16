@@ -3,17 +3,20 @@
 Mini-Case zur Vorhersage von Flugverspätungen am Washington Dulles International (IAD).
 Methode: **CRISP-DM** (Business Understanding → Data Understanding → Data Preparation → Modeling → Evaluation → Deployment).
 
+**Status: Alle Phasen abgeschlossen. Finaler Bericht: `docs/final_evaluation.md`.**
+
 ## Business Problem
 
 > "Verspätungen frühzeitig erkennen." — Klassifikation, Airline Delay Dataset, bessere Ressourcenplanung.
 
 ## Datenquelle
 
-- **BTS TranStats – On-Time Departures** (manuell heruntergeladen)
+- **BTS TranStats – On-Time Statistics** (manuell heruntergeladen, 4 Tabellen)
 - Web: <https://www.transtats.bts.gov/ONTIME/Departures.aspx>
 - Airport: IAD (Washington Dulles International)
-- Carrier (in den vorhandenen Daten): **United Airlines (UA)**
-- Zeitraum: **2025-01-01 bis 2026-04-30** (16 Monate, 47.217 Flüge)
+- Carrier: **United Airlines (UA)** (alle Tabellen)
+- Zeitraum: **2024-01-01 bis 2025-12-31** (~95 000 Flüge nach Cleaning)
+- **Wetter**: NCEI ISD-Lite (Bulk, KIAD Station USAF 724050), 2024-01-01 bis 2025-08-27
 
 ## Projektstruktur
 
@@ -70,9 +73,9 @@ pip install -r requirements.txt
 | 1. Business Understanding | erledigt | `docs/data_understanding.md` Abschnitt 1 |
 | 2. Data Understanding | erledigt | `docs/data_understanding.md` Abschnitt 2 |
 | 3. Data Preparation | erledigt | `docs/data_preparation.md` + `data/processed/*.parquet` |
-| 4. Modeling | erledigt | `notebooks/01-03*.ipynb` + `models/*.joblib` + `results/*.png` |
-| 5. Evaluation | erledigt | `notebooks/04_compare_models.ipynb` + `docs/model_evaluation.md` |
-| 6. Deployment | offen | – |
+| 4. Modeling | erledigt | `src/final_evaluation.py` + `models/*.joblib` + `results/final_*.png` |
+| 5. Evaluation | erledigt | `results/final_metrics.json` + `docs/final_evaluation.md` |
+| 6. Deployment | Skeleton | `src/inference.py` (CLI) – operative Pilotphase ausstehend |
 
 ## Wichtigste Erkenntnisse aus Phase 1+2
 
@@ -87,28 +90,37 @@ pip install -r requirements.txt
 
 ## Modell-Ergebnisse (Phase 4+5)
 
-### Baseline (20260616_090104) – 27 Features, kein Wetter, 2026-Q1/Q2 Val
+### Final – 24 Features, mit Wetter, 2025-Q3 Val (Snapshot 20260616_101841)
 
 | Modell | PR-AUC | ROC-AUC | F1 (optimal) | Brier | Precision (opt) | Recall (opt) |
 |---|---:|---:|---:|---:|---:|---:|
-| LogReg Baseline | 0.276 | 0.681 | 0.336 | 0.215 | 0.293 | 0.396 |
-| Random Forest    | 0.301 | 0.691 | 0.353 | 0.182 | 0.294 | 0.441 |
-| **XGBoost**      | **0.315** | **0.694** | **0.356** | 0.191 | **0.299** | **0.441** |
+| LogReg | 0.4549 | 0.7521 | 0.5079 | 0.2389 | 0.4273 | 0.6260 |
+| **Random Forest** | **0.5268** | **0.7783** | **0.5278** | 0.2291 | **0.4613** | 0.6169 |
+| XGBoost | 0.4853 | 0.7706 | 0.5169 | **0.1425** | 0.4492 | 0.6086 |
 
-### Nach Wetter + Reduktion (20260616_100444) – 24 Features, mit Wetter, 2025-Q3 Val
+**Empfehlung: Random Forest** – beste Diskrimination (PR-AUC 0.527, 2.4× Lift).
+XGBoost hat das beste Brier-Score (besser kalibriert) – Wahl je nach Use-Case.
 
-| Modell | PR-AUC | ROC-AUC | F1 (optimal) | Brier | Precision (opt) | Recall (opt) |
-|---|---:|---:|---:|---:|---:|---:|
-| **XGBoost**      | **0.485** | **0.771** | **0.517** | **0.142** | **0.449** | **0.609** |
+**Business Case**: Bei Precision ≥ 0.7 (kostenintensive Aktionen) erreichen alle
+drei Modelle rund 70 % Precision; Random Forest dabei mit höchstem Recall (21 %).
 
-**Verbesserung: PR-AUC +0.17, Precision +0.15, Recall +0.17.**
-
-Wichtigste Features (neue Auswahl):
+Wichtigste Features:
 1. `origin_daily_arrival_delay_mean` (verspätete Vorgänger-Ankunft)
 2. `cancellations_on_day` (Carrier-Probleme am Tag)
-3. `wind_kts` (NEU – Wetter)
-4. `temp_c` (NEU – Wetter)
+3. `wind_kts` (Wetter)
+4. `temp_c` (Wetter)
 5. `tod_sin` (Tageszeit)
+
+### Baseline (vor Wetter, Snapshot 20260616_090104) – 27 Features, 2026-Q1/Q2 Val
+
+| Modell | PR-AUC | F1@opt | Precision@opt | Recall@opt |
+|---|---:|---:|---:|---:|
+| LogReg | 0.276 | 0.336 | 0.293 | 0.396 |
+| Random Forest | 0.301 | 0.353 | 0.294 | 0.441 |
+| XGBoost | 0.315 | 0.356 | 0.299 | 0.441 |
+
+**Verbesserung Final vs. Baseline: PR-AUC +0.21, Precision@opt +0.16.**
+Wetter + Reduktion + größerer Trainingsumfang haben das Modell **deutlich** verbessert.
 
 ## Skripte
 
